@@ -234,7 +234,7 @@ dependencies = [
 
 [[package]]
 name = "rai"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -244,7 +244,7 @@ dependencies = [
 
 [[package]]
 name = "rai-cmd-hello"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "rai-core",
@@ -253,7 +253,7 @@ dependencies = [
 
 [[package]]
 name = "rai-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
