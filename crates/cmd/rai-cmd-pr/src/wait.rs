@@ -44,7 +44,10 @@ impl Run for Cmd {
         let pr = resolve_pr(self.pr.as_deref(), self.repo.as_deref())?;
         eprintln!(
             "watching {}/{} #{} (head {})",
-            pr.owner, pr.repo, pr.number, &pr.head_sha[..7.min(pr.head_sha.len())],
+            pr.owner,
+            pr.repo,
+            pr.number,
+            &pr.head_sha[..7.min(pr.head_sha.len())],
         );
 
         let tty = io::stderr().is_terminal();
@@ -93,7 +96,10 @@ impl Run for Cmd {
         };
 
         let outcome = summary.outcome();
-        let pr_url = format!("https://github.com/{}/{}/pull/{}", pr.owner, pr.repo, pr.number);
+        let pr_url = format!(
+            "https://github.com/{}/{}/pull/{}",
+            pr.owner, pr.repo, pr.number
+        );
 
         if self.json {
             let body = serde_json::json!({
@@ -156,12 +162,7 @@ fn resolve_pr(arg: Option<&str>, repo_override: Option<&str>) -> Result<Pr> {
         }
         None => {
             let (o, r) = resolve_repo(repo_override)?;
-            let json = gh_capture(&[
-                "pr",
-                "view",
-                "--json",
-                "number,headRefOid",
-            ])?;
+            let json = gh_capture(&["pr", "view", "--json", "number,headRefOid"])?;
             #[derive(Deserialize)]
             struct V {
                 number: u64,
@@ -221,12 +222,7 @@ fn resolve_repo(repo_override: Option<&str>) -> Result<(String, String)> {
             .ok_or_else(|| anyhow!("--repo must be OWNER/REPO"))?;
         return Ok((o.to_string(), r.to_string()));
     }
-    let json = gh_capture(&[
-        "repo",
-        "view",
-        "--json",
-        "owner,name",
-    ])?;
+    let json = gh_capture(&["repo", "view", "--json", "owner,name"])?;
     #[derive(Deserialize)]
     struct V {
         owner: Owner,
@@ -314,8 +310,7 @@ fn fetch_check_runs(pr: &Pr) -> Result<Summary> {
             pr.owner, pr.repo, pr.head_sha
         ),
     ])?;
-    let body: CheckRuns =
-        serde_json::from_str(&json).context("failed to parse check-runs JSON")?;
+    let body: CheckRuns = serde_json::from_str(&json).context("failed to parse check-runs JSON")?;
     let mut s = Summary {
         total: body.total_count,
         ..Default::default()
@@ -326,7 +321,12 @@ fn fetch_check_runs(pr: &Pr) -> Result<Summary> {
                 s.completed += 1;
                 match r.conclusion.as_deref() {
                     Some("success") | Some("neutral") => s.success += 1,
-                    Some("failure") | Some("timed_out") | Some("cancelled") | Some("action_required") | Some("startup_failure") | Some("stale") => s.failure += 1,
+                    Some("failure")
+                    | Some("timed_out")
+                    | Some("cancelled")
+                    | Some("action_required")
+                    | Some("startup_failure")
+                    | Some("stale") => s.failure += 1,
                     Some("skipped") => s.skipped += 1,
                     _ => {}
                 }
@@ -363,18 +363,14 @@ fn send_notify(outcome: Outcome, pr: &Pr, url: &str, s: &Summary) -> Result<()> 
     );
     if proc::find_in_path("terminal-notifier").is_some() {
         Command::new("terminal-notifier")
-            .args([
-                "-title",
-                &title,
-                "-message",
-                &msg,
-                "-open",
-                url,
-            ])
+            .args(["-title", &title, "-message", &msg, "-open", url])
             .status()
             .ok();
     } else if proc::find_in_path("notify-send").is_some() {
-        Command::new("notify-send").args([&title, &msg]).status().ok();
+        Command::new("notify-send")
+            .args([&title, &msg])
+            .status()
+            .ok();
     }
     Ok(())
 }

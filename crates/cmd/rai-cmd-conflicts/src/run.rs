@@ -63,8 +63,8 @@ impl Run for Cmd {
         let _lock = queue::Lock::try_acquire(&paths.lock_file())?;
 
         let signal_slot = signals::install()?;
-        let agent_argv = shell_words::split(&self.agent_cmd)
-            .context("failed to split --agent-cmd")?;
+        let agent_argv =
+            shell_words::split(&self.agent_cmd).context("failed to split --agent-cmd")?;
         if agent_argv.is_empty() {
             bail!("--agent-cmd is empty");
         }
@@ -78,20 +78,12 @@ impl Run for Cmd {
 
         loop {
             // enqueue.
-            if let Err(e) = enqueue(
-                &paths,
-                &queue_mutex,
-                &self.pr,
-                &self.author,
-                self.all,
-            ) {
+            if let Err(e) = enqueue(&paths, &queue_mutex, &self.pr, &self.author, self.all) {
                 ts::println(format!("enqueue error: {e}"));
             }
 
             // spawn workers up to --jobs.
-            while alive.len() < self.jobs as usize
-                && signal_slot.load(Ordering::SeqCst) == 0
-            {
+            while alive.len() < self.jobs as usize && signal_slot.load(Ordering::SeqCst) == 0 {
                 let claimed = pop_pending(&paths, &queue_mutex)?;
                 let Some((pr, entry)) = claimed else { break };
                 let paths = paths.clone();
@@ -328,19 +320,11 @@ struct WorkerOutcome {
     error: Option<String>,
 }
 
-fn process_one(
-    paths: &Paths,
-    agent_argv: &[String],
-    pr: u64,
-    entry: &Entry,
-) -> WorkerOutcome {
+fn process_one(paths: &Paths, agent_argv: &[String], pr: u64, entry: &Entry) -> WorkerOutcome {
     let log_path = paths
         .logs_dir()
         .join(format!("{pr}-{}.log", short(&entry.head_sha)));
-    let log_writer = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path);
+    let log_writer = OpenOptions::new().create(true).append(true).open(&log_path);
     let log_writer = match log_writer {
         Ok(f) => Mutex::new(f),
         Err(e) => {
@@ -360,7 +344,10 @@ fn process_one(
 
     log(&format!("=== begin pr={pr} sha={} ===", entry.head_sha));
     let wt = paths.worktree_dir(pr);
-    let _ = run_git(&log, &["worktree", "remove", "--force", &wt.display().to_string()]);
+    let _ = run_git(
+        &log,
+        &["worktree", "remove", "--force", &wt.display().to_string()],
+    );
     if let Err(e) = fs::create_dir_all(wt.parent().unwrap_or(&wt)) {
         log(&format!("mkdir parent: {e}"));
     }
@@ -409,7 +396,12 @@ fn process_one(
         );
     };
 
-    if let Err(e) = run_in(&log, &wt, "gh", &["pr", "checkout", &pr.to_string(), "--force"]) {
+    if let Err(e) = run_in(
+        &log,
+        &wt,
+        "gh",
+        &["pr", "checkout", &pr.to_string(), "--force"],
+    ) {
         cleanup_wt();
         return WorkerOutcome {
             log_path,
@@ -487,12 +479,7 @@ fn process_one(
 
     let push_needed = should_push(&wt, &entry.base_ref);
     if push_needed {
-        if let Err(e) = run_in(
-            &log,
-            &wt,
-            "git",
-            &["push", "--force-with-lease"],
-        ) {
+        if let Err(e) = run_in(&log, &wt, "git", &["push", "--force-with-lease"]) {
             cleanup_wt();
             return WorkerOutcome {
                 log_path,
@@ -511,7 +498,9 @@ fn process_one(
 
 fn finalize(paths: &Paths, qmx: &Mutex<()>, pr: u64, outcome: WorkerOutcome) {
     let _g = qmx.lock().unwrap();
-    let Ok(mut q) = queue::load(&paths.queue_json()) else { return };
+    let Ok(mut q) = queue::load(&paths.queue_json()) else {
+        return;
+    };
     let key = pr.to_string();
     if let Some(e) = q.entries.get_mut(&key) {
         e.attempts += 1;
@@ -542,7 +531,11 @@ fn run_git(log: &dyn Fn(&str), args: &[&str]) -> Result<()> {
 }
 
 fn run_in(log: &dyn Fn(&str), cwd: &Path, bin: &str, args: &[&str]) -> Result<()> {
-    log(&format!("[{cwd}] {bin} {a}", cwd = cwd.display(), a = args.join(" ")));
+    log(&format!(
+        "[{cwd}] {bin} {a}",
+        cwd = cwd.display(),
+        a = args.join(" ")
+    ));
     let st = Command::new(bin).args(args).current_dir(cwd).status()?;
     if !st.success() {
         bail!("{bin} {} -> {:?}", args.join(" "), st.code());
@@ -571,7 +564,13 @@ fn attach_log(cmd: &mut Command, log_path: &std::path::Path) {
 
 fn has_unresolved_markers(wt: &Path) -> bool {
     let out = Command::new("git")
-        .args(["-C", &wt.display().to_string(), "diff", "--name-only", "--diff-filter=U"])
+        .args([
+            "-C",
+            &wt.display().to_string(),
+            "diff",
+            "--name-only",
+            "--diff-filter=U",
+        ])
         .output();
     matches!(out, Ok(o) if !o.stdout.is_empty())
 }

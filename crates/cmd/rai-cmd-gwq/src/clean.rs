@@ -178,7 +178,12 @@ fn detect_default_branch(remote: &str) -> Result<String> {
     }
     for cand in ["main", "master"] {
         let st = Command::new("git")
-            .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{cand}")])
+            .args([
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{cand}"),
+            ])
             .status()?;
         if st.success() {
             return Ok(cand.to_string());
@@ -408,11 +413,17 @@ fn remove_one(e: &Entry) -> Result<()> {
         if let Err(err) = fs::remove_dir_all(&e.path) {
             eprintln!("warn: rm -rf {}: {err}", e.path.display());
         }
-        Command::new("git").args(["worktree", "prune"]).status().ok();
+        Command::new("git")
+            .args(["worktree", "prune"])
+            .status()
+            .ok();
     }
     if branch_exists(&e.branch) {
         // squash-merged etc.: try git branch -D
-        Command::new("git").args(["branch", "-D", &e.branch]).status().ok();
+        Command::new("git")
+            .args(["branch", "-D", &e.branch])
+            .status()
+            .ok();
     }
     Ok(())
 }

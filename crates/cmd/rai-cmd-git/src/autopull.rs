@@ -65,9 +65,7 @@ impl Run for Cmd {
 
         ts::println(format!(
             "autopull start branch={branch} upstream={upstream} interval={}s once={} ff={}",
-            self.interval,
-            self.once,
-            !self.no_fast_forward,
+            self.interval, self.once, !self.no_fast_forward,
         ));
 
         loop {
@@ -76,13 +74,7 @@ impl Run for Cmd {
                 break;
             }
 
-            if let Err(e) = run_cycle(
-                &self,
-                &branch,
-                &remote,
-                &remote_branch,
-                &upstream,
-            ) {
+            if let Err(e) = run_cycle(&self, &branch, &remote, &remote_branch, &upstream) {
                 ts::println(format!("cycle error: {e}"));
                 if self.strict {
                     return Err(e);

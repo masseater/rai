@@ -110,10 +110,7 @@ fn render_event(out: &mut impl Write, g: &Glyphs, v: &Value) -> io::Result<()> {
 fn render_system(out: &mut impl Write, g: &Glyphs, v: &Value) -> io::Result<()> {
     let subtype = v.get("subtype").and_then(|x| x.as_str()).unwrap_or("");
     if subtype == "init" {
-        let session = v
-            .get("session_id")
-            .and_then(|x| x.as_str())
-            .unwrap_or("?");
+        let session = v.get("session_id").and_then(|x| x.as_str()).unwrap_or("?");
         let model = v.get("model").and_then(|x| x.as_str()).unwrap_or("?");
         writeln!(out, "{} session={} model={}", g.info, session, model)
     } else {
@@ -127,7 +124,11 @@ fn render_message(out: &mut impl Write, g: &Glyphs, ty: &str, v: &Value) -> io::
         .get("message")
         .and_then(|m| m.get("content"))
         .and_then(|c| c.as_array());
-    let role_label = if ty == "assistant" { "assistant" } else { "user" };
+    let role_label = if ty == "assistant" {
+        "assistant"
+    } else {
+        "user"
+    };
     if let Some(blocks) = blocks {
         for block in blocks {
             render_block(out, g, role_label, block)?;
@@ -159,10 +160,7 @@ fn render_block(out: &mut impl Write, g: &Glyphs, role: &str, b: &Value) -> io::
             writeln!(out, "{} tool_use[{}]: {}", g.tool, name, input)
         }
         "tool_result" => {
-            let id = b
-                .get("tool_use_id")
-                .and_then(|x| x.as_str())
-                .unwrap_or("?");
+            let id = b.get("tool_use_id").and_then(|x| x.as_str()).unwrap_or("?");
             let content = b
                 .get("content")
                 .map(stringify_tool_content)
@@ -207,7 +205,11 @@ fn render_result(out: &mut impl Write, g: &Glyphs, v: &Value) -> io::Result<()> 
         .and_then(|x| x.as_i64())
         .map(|x| format!("{x}ms"))
         .unwrap_or_else(|| "?".into());
-    writeln!(out, "{} done cost={} turns={} duration={}", g.ok, cost, turns, dur)
+    writeln!(
+        out,
+        "{} done cost={} turns={} duration={}",
+        g.ok, cost, turns, dur
+    )
 }
 
 fn render_error(out: &mut impl Write, g: &Glyphs, v: &Value) -> io::Result<()> {

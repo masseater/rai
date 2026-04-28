@@ -53,11 +53,7 @@ impl Run for Cmd {
         eprintln!("worktree: {}", wt_path.display());
 
         let prompt = build_prompt(self.prompt_template.as_deref(), &url, &title)?;
-        let full_cmd = format!(
-            "{} {}",
-            self.engine_cmd,
-            shell_words::quote(&prompt),
-        );
+        let full_cmd = format!("{} {}", self.engine_cmd, shell_words::quote(&prompt),);
 
         if self.no_tmux {
             let status = Command::new("sh")
@@ -223,7 +219,9 @@ fn pick_issue_with_fzf(owner: &str, repo: &str) -> Result<(u64, String)> {
     }
     let s = String::from_utf8_lossy(&out.stdout);
     let line = s.lines().next().unwrap_or("");
-    let (left, title) = line.split_once('\t').ok_or_else(|| anyhow!("invalid fzf output"))?;
+    let (left, title) = line
+        .split_once('\t')
+        .ok_or_else(|| anyhow!("invalid fzf output"))?;
     let n: u64 = left
         .trim_start_matches('#')
         .parse()
@@ -255,7 +253,12 @@ fn slugify(title: &str) -> String {
         }
     }
     let trimmed = out.trim_matches('-').to_string();
-    trimmed.chars().take(40).collect::<String>().trim_matches('-').to_string()
+    trimmed
+        .chars()
+        .take(40)
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
 }
 
 fn ensure_worktree(branch: &str) -> Result<PathBuf> {
@@ -264,7 +267,10 @@ fn ensure_worktree(branch: &str) -> Result<PathBuf> {
         match action {
             ExistingAction::Attach => Ok(path),
             ExistingAction::ForceRecreate => {
-                Command::new("gwq").args(["tmux", "kill", branch]).status().ok();
+                Command::new("gwq")
+                    .args(["tmux", "kill", branch])
+                    .status()
+                    .ok();
                 let st = Command::new("gwq")
                     .args(["remove", "--force", branch])
                     .status()

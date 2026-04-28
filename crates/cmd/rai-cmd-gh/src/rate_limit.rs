@@ -72,9 +72,10 @@ impl Cmd {
                     .resources
                     .get(*name)
                     .ok_or_else(|| anyhow!("rate_limit response missing resource: {name}"))?;
-                let reset_dt = Utc.timestamp_opt(r.reset, 0).single().ok_or_else(|| {
-                    anyhow!("invalid reset timestamp for {name}: {}", r.reset)
-                })?;
+                let reset_dt = Utc
+                    .timestamp_opt(r.reset, 0)
+                    .single()
+                    .ok_or_else(|| anyhow!("invalid reset timestamp for {name}: {}", r.reset))?;
                 let in_secs = (reset_dt - snap.now).num_seconds().max(0);
                 out.insert(
                     (*name).to_string(),
