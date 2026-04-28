@@ -8,13 +8,14 @@ GitHub Issue を起点に、専用の git worktree (`gwq`) と tmux session を�
 
 ## 機能要件
 
-- 入力解決 (どれか 1 つ):
-  - 引数なし: `gh issue list --state open --limit 50` を fzf で選択。
+- 入力解決:
+  - 引数なし: `gh issue list --state open --limit 50` を fzf 複数選択で選ぶ。
   - URL: `https://github.com/OWNER/REPO/issues/N` をパース。
   - 番号: 現リポジトリの `nameWithOwner` から `OWNER/REPO` を解決。
+  - URL / 番号は複数指定できる。
   - `--repo OWNER/REPO` で上書き。
 - ブランチ名生成:
-  - `-b/--branch` 指定があればそれを使う。
+  - `-b/--branch` 指定があればそれを使う。ただし複数 Issue 指定時は使えない。
   - 未指定の場合は issue title から slug を作成し、`develop/issue-<N>[-<slug>]-<YYYYMMDD-HHMMSS>` を生成。
   - slug: lower → `[^a-z0-9]+` を `-` に → 前後 `-` 削除 → 先頭 40 文字。fish 版と同じ規則。
 - worktree (`gwq`):
@@ -28,13 +29,16 @@ GitHub Issue を起点に、専用の git worktree (`gwq`) と tmux session を�
   - 既定の engine_cmd は fish 版互換 (`ccs_print c1`)。`-e/--engine-cmd CMD` で上書き可能。
   - prompt は `--prompt-template FILE` でファイルから読める。
   - `tmux new-session -d -s gwq-run-issue-<N>-<ts> -c <wt-path> <full_cmd>` で起動。
+  - 複数 Issue 選択時は Issue ごとに worktree と tmux session を作成する。
   - `--no-tmux` で tmux を介さず前面実行 (デバッグ用)。
 - ロールバック: gwq add 後 tmux 起動失敗 → `gwq remove` で巻き戻す。
 
 ## 受け入れ条件
 
-- [ ] 引数なしで fzf による issue 選択ができる。
+- [ ] 引数なしで fzf による issue 複数選択ができる。
 - [ ] URL / 番号 / 省略 の 3 系統解決ができる。
+- [ ] URL / 番号を複数指定すると Issue ごとに起動できる。
+- [ ] 複数 Issue 指定時に `--branch` を使うとエラーになる。
 - [ ] branch 名生成が現行 fish 版と一致 (slug 規則, ts 形式)。
 - [ ] gwq existing 時の attach / force-recreate / abort が動く。
 - [ ] tmux session が `gwq-run-issue-<N>-<ts>` で立ち上がり、`-c` で worktree path に cd される。

@@ -13,9 +13,9 @@ use serde::Deserialize;
 
 #[derive(Debug, Args)]
 pub struct Cmd {
-    /// Issue 識別子: 番号 / URL / 省略 (省略時は fzf 選択)。
+    /// Issue 識別子: 番号 / URL / 省略 (省略時は fzf 複数選択)。
     #[arg(value_name = "ISSUE")]
-    issue: Option<String>,
+    issue: Vec<String>,
 
     /// `OWNER/REPO` を上書き。
     #[arg(long, value_name = "OWNER/REPO")]
@@ -40,89 +40,154 @@ pub struct Cmd {
 
 impl Run for Cmd {
     fn run(self, _ctx: &Ctx) -> Result<()> {
-        let (owner, repo, number, title, url) = resolve_issue(&self)?;
-        eprintln!("issue: {url}");
-
-        let branch = match &self.branch {
-            Some(b) => b.clone(),
-            None => default_branch(&title, number),
-        };
-        eprintln!("branch: {branch}");
-
-        let wt_path = ensure_worktree(&branch)?;
-        eprintln!("worktree: {}", wt_path.display());
-
-        let prompt = build_prompt(self.prompt_template.as_deref(), &url, &title)?;
-        let full_cmd = format!("{} {}", self.engine_cmd, shell_words::quote(&prompt),);
-
-        if self.no_tmux {
-            let status = Command::new("sh")
-                .arg("-c")
-                .arg(&full_cmd)
-                .current_dir(&wt_path)
-                .status()
-                .context("failed to spawn engine_cmd")?;
-            if !status.success() {
-                bail!("engine_cmd exited with {:?}", status.code());
-            }
-            return Ok(());
+        if self.issue.len() > 1 && self.branch.is_some() {
+            bail!("--branch can only be used with a single issue");
         }
 
-        let ts = Local::now().format("%Y%m%d-%H%M%S");
-        let session = format!("gwq-run-issue-{number}-{ts}");
-        let status = Command::new("tmux")
-            .args([
-                "new-session",
-                "-d",
-                "-s",
-                &session,
-                "-c",
-                &wt_path.display().to_string(),
-                &full_cmd,
-            ])
-            .status();
-        match status {
-            Ok(s) if s.success() => {
-                println!("tmux session: {session}");
-                println!("cwd: {}", wt_path.display());
-                println!("attach: tmux attach -t {session}");
-                let _ = (&owner, &repo);
-                Ok(())
-            }
-            other => {
+        let issues = resolve_issues(&self)?;
+        if issues.len() > 1 && self.branch.is_some() {
+            bail!("--branch can only be used with a single issue");
+        }
+
+        for issue in issues {
+            run_one(&self, &issue)?;
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct Issue {
+    owner: String,
+    repo: String,
+    number: u64,
+    title: String,
+    url: String,
+}
+
+#[derive(Debug)]
+struct Worktree {
+    path: PathBuf,
+    created: bool,
+}
+
+fn run_one(cmd: &Cmd, issue: &Issue) -> Result<()> {
+    eprintln!("issue: {}", issue.url);
+
+    let branch = match &cmd.branch {
+        Some(b) => b.clone(),
+        None => default_branch(&issue.title, issue.number),
+    };
+    eprintln!("branch: {branch}");
+
+    let wt = ensure_worktree(&branch)?;
+    eprintln!("worktree: {}", wt.path.display());
+
+    let prompt = build_prompt(cmd.prompt_template.as_deref(), &issue.url, &issue.title)?;
+    let full_cmd = format!("{} {}", cmd.engine_cmd, shell_words::quote(&prompt),);
+
+    if cmd.no_tmux {
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(&full_cmd)
+            .current_dir(&wt.path)
+            .status()
+            .context("failed to spawn engine_cmd")?;
+        if !status.success() {
+            bail!("engine_cmd exited with {:?}", status.code());
+        }
+        return Ok(());
+    }
+
+    let ts = Local::now().format("%Y%m%d-%H%M%S");
+    let session = format!("gwq-run-issue-{}-{ts}", issue.number);
+    let status = Command::new("tmux")
+        .args([
+            "new-session",
+            "-d",
+            "-s",
+            &session,
+            "-c",
+            &wt.path.display().to_string(),
+            &full_cmd,
+        ])
+        .status();
+    match status {
+        Ok(s) if s.success() => {
+            println!("tmux session: {session}");
+            println!("cwd: {}", wt.path.display());
+            println!("attach: tmux attach -t {session}");
+            let _ = (&issue.owner, &issue.repo);
+            Ok(())
+        }
+        other => {
+            if wt.created {
                 eprintln!("tmux start failed; rolling back worktree");
                 Command::new("gwq")
                     .args(["remove", "--force", &branch])
                     .status()
                     .ok();
-                match other {
-                    Ok(s) => bail!("tmux exited with {:?}", s.code()),
-                    Err(e) => Err(anyhow::Error::new(e).context("failed to spawn tmux")),
-                }
+            }
+            match other {
+                Ok(s) => bail!("tmux exited with {:?}", s.code()),
+                Err(e) => Err(anyhow::Error::new(e).context("failed to spawn tmux")),
             }
         }
     }
 }
 
-fn resolve_issue(cmd: &Cmd) -> Result<(String, String, u64, String, String)> {
-    if let Some(arg) = &cmd.issue {
-        if let Some((o, r, n)) = parse_issue_url(arg) {
-            let title = fetch_title(&o, &r, n)?;
-            let url = format!("https://github.com/{o}/{r}/issues/{n}");
-            return Ok((o, r, n, title, url));
+fn resolve_issues(cmd: &Cmd) -> Result<Vec<Issue>> {
+    if !cmd.issue.is_empty() {
+        let mut issues = Vec::with_capacity(cmd.issue.len());
+        for arg in &cmd.issue {
+            issues.push(resolve_issue_arg(cmd, arg)?);
         }
-        if let Ok(n) = arg.parse::<u64>() {
-            let (o, r) = resolve_repo(cmd.repo.as_deref())?;
-            let title = fetch_title(&o, &r, n)?;
-            let url = format!("https://github.com/{o}/{r}/issues/{n}");
-            return Ok((o, r, n, title, url));
-        }
-        bail!("invalid issue identifier: {arg}");
+        return Ok(issues);
     }
+
     let (o, r) = resolve_repo(cmd.repo.as_deref())?;
-    let (n, title) = pick_issue_with_fzf(&o, &r)?;
-    let url = format!("https://github.com/{o}/{r}/issues/{n}");
-    Ok((o, r, n, title, url))
+    let selected = pick_issues_with_fzf(&o, &r)?;
+    Ok(selected
+        .into_iter()
+        .map(|(n, title)| {
+            let url = format!("https://github.com/{o}/{r}/issues/{n}");
+            Issue {
+                owner: o.clone(),
+                repo: r.clone(),
+                number: n,
+                title,
+                url,
+            }
+        })
+        .collect())
+}
+
+fn resolve_issue_arg(cmd: &Cmd, arg: &str) -> Result<Issue> {
+    if let Some((o, r, n)) = parse_issue_url(arg) {
+        let title = fetch_title(&o, &r, n)?;
+        let url = format!("https://github.com/{o}/{r}/issues/{n}");
+        return Ok(Issue {
+            owner: o,
+            repo: r,
+            number: n,
+            title,
+            url,
+        });
+    }
+    if let Ok(n) = arg.parse::<u64>() {
+        let (o, r) = resolve_repo(cmd.repo.as_deref())?;
+        let title = fetch_title(&o, &r, n)?;
+        let url = format!("https://github.com/{o}/{r}/issues/{n}");
+        return Ok(Issue {
+            owner: o,
+            repo: r,
+            number: n,
+            title,
+            url,
+        });
+    }
+    bail!("invalid issue identifier: {arg}");
 }
 
 fn parse_issue_url(s: &str) -> Option<(String, String, u64)> {
@@ -178,7 +243,7 @@ fn fetch_title(owner: &str, repo: &str, number: u64) -> Result<String> {
     Ok(v.title)
 }
 
-fn pick_issue_with_fzf(owner: &str, repo: &str) -> Result<(u64, String)> {
+fn pick_issues_with_fzf(owner: &str, repo: &str) -> Result<Vec<(u64, String)>> {
     let json = gh_capture(&[
         "issue",
         "list",
@@ -202,6 +267,7 @@ fn pick_issue_with_fzf(owner: &str, repo: &str) -> Result<(u64, String)> {
         bail!("no open issues found");
     }
     let mut fzf = Command::new("fzf")
+        .arg("--multi")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -218,7 +284,21 @@ fn pick_issue_with_fzf(owner: &str, repo: &str) -> Result<(u64, String)> {
         std::process::exit(130);
     }
     let s = String::from_utf8_lossy(&out.stdout);
-    let line = s.lines().next().unwrap_or("");
+    parse_selected_issues(&s)
+}
+
+fn parse_selected_issues(s: &str) -> Result<Vec<(u64, String)>> {
+    let mut selected = Vec::new();
+    for line in s.lines() {
+        selected.push(parse_selected_issue(line)?);
+    }
+    if selected.is_empty() {
+        std::process::exit(130);
+    }
+    Ok(selected)
+}
+
+fn parse_selected_issue(line: &str) -> Result<(u64, String)> {
     let (left, title) = line
         .split_once('\t')
         .ok_or_else(|| anyhow!("invalid fzf output"))?;
@@ -261,11 +341,14 @@ fn slugify(title: &str) -> String {
         .to_string()
 }
 
-fn ensure_worktree(branch: &str) -> Result<PathBuf> {
+fn ensure_worktree(branch: &str) -> Result<Worktree> {
     if let Ok(path) = gwq_get(branch) {
         let action = prompt_existing(branch)?;
         match action {
-            ExistingAction::Attach => Ok(path),
+            ExistingAction::Attach => Ok(Worktree {
+                path,
+                created: false,
+            }),
             ExistingAction::ForceRecreate => {
                 Command::new("gwq")
                     .args(["tmux", "kill", branch])
@@ -278,12 +361,18 @@ fn ensure_worktree(branch: &str) -> Result<PathBuf> {
                 if !st.success() {
                     bail!("gwq remove failed");
                 }
-                gwq_add(branch)
+                gwq_add(branch).map(|path| Worktree {
+                    path,
+                    created: true,
+                })
             }
             ExistingAction::Abort => std::process::exit(130),
         }
     } else {
-        gwq_add(branch)
+        gwq_add(branch).map(|path| Worktree {
+            path,
+            created: true,
+        })
     }
 }
 
@@ -361,7 +450,7 @@ fn gh_capture(args: &[&str]) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_branch, slugify};
+    use super::{default_branch, parse_selected_issues, slugify};
 
     #[test]
     fn default_branch_uses_develop_issue_prefix() {
@@ -388,6 +477,16 @@ mod tests {
         assert_eq!(
             slugify("abcdefghijklmnopqrstuvwxyz0123456789-extra"),
             "abcdefghijklmnopqrstuvwxyz0123456789-ext"
+        );
+    }
+
+    #[test]
+    fn parse_selected_issues_accepts_multiple_fzf_lines() {
+        let issues = parse_selected_issues("#12\tFirst issue\n#34\tSecond issue\n").unwrap();
+
+        assert_eq!(
+            issues,
+            vec![(12, "First issue".into()), (34, "Second issue".into())]
         );
     }
 }
