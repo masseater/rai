@@ -1,4 +1,4 @@
-//! `rai issue fix` — Issue から worktree + tmux + agent を起動する。
+//! `rai issue develop` — Issue から worktree + tmux + agent を起動する。
 
 use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
@@ -233,9 +233,9 @@ fn default_branch(title: &str, number: u64) -> String {
     let slug = slugify(title);
     let ts = Local::now().format("%Y%m%d-%H%M%S");
     if slug.is_empty() {
-        format!("fix/issue-{number}-{ts}")
+        format!("develop/issue-{number}-{ts}")
     } else {
-        format!("fix/issue-{number}-{slug}-{ts}")
+        format!("develop/issue-{number}-{slug}-{ts}")
     }
 }
 
@@ -339,7 +339,7 @@ fn build_prompt(template: Option<&std::path::Path>, url: &str, title: &str) -> R
             .replace("{ISSUE_TITLE}", title));
     }
     Ok(format!(
-        "GitHub Issue {url} (`{title}`) を一気通貫で実装し、`gh pr create` で PR を作成するまで自走してください。テスト・ビルド・clippy をローカルで通すこと。"
+        "GitHub Issue {url} (`{title}`) を一気通貫で開発し、`gh pr create` で PR を作成するまで自走してください。テスト・ビルド・clippy をローカルで通すこと。"
     ))
 }
 
@@ -357,4 +357,37 @@ fn gh_capture(args: &[&str]) -> Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{default_branch, slugify};
+
+    #[test]
+    fn default_branch_uses_develop_issue_prefix() {
+        let branch = default_branch("Add issue workflow", 9);
+
+        assert!(branch.starts_with("develop/issue-9-add-issue-workflow-"));
+        assert!(!branch.starts_with("fix/"));
+    }
+
+    #[test]
+    fn default_branch_without_slug_uses_develop_issue_prefix() {
+        let branch = default_branch("!!!", 9);
+
+        assert!(branch.starts_with("develop/issue-9-"));
+        assert!(!branch.starts_with("fix/"));
+    }
+
+    #[test]
+    fn slugify_keeps_existing_rules() {
+        assert_eq!(
+            slugify("Hello, RAI issue develop!"),
+            "hello-rai-issue-develop"
+        );
+        assert_eq!(
+            slugify("abcdefghijklmnopqrstuvwxyz0123456789-extra"),
+            "abcdefghijklmnopqrstuvwxyz0123456789-ext"
+        );
+    }
 }

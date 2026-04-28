@@ -41,6 +41,14 @@ cargo install --path crates/rai
 
 Run `rai <subcommand> --help` for details on each.
 
+### Migrating issue workflow
+
+If you previously used the fish function, point it at the `develop` subcommand:
+
+```fish
+alias gh-issue-fix 'rai issue develop'
+```
+
 ## Shell Completion
 
 `rai completion <shell>` writes a completion script to stdout. The definition

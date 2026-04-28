@@ -1,8 +1,8 @@
 //! `rai issue` — GitHub Issue を起点に worktree + tmux + agent を起動する。
 //!
-//! 仕様: `docs/specs/09-issue-fix.md` 参照。
+//! 仕様: `docs/specs/09-issue-develop.md` 参照。
 
-pub mod fix;
+pub mod develop;
 
 use clap::{Args, Subcommand};
 use rai_core::{cli::Run, Ctx, Result};
@@ -17,13 +17,13 @@ pub struct Cmd {
 #[derive(Debug, Subcommand)]
 enum IssueCmd {
     /// Issue から worktree + tmux + agent CLI を一気通貫で起動する。
-    Fix(fix::Cmd),
+    Develop(develop::Cmd),
 }
 
 impl Run for Cmd {
     fn run(self, ctx: &Ctx) -> Result<()> {
         match self.sub {
-            IssueCmd::Fix(c) => c.run(ctx),
+            IssueCmd::Develop(c) => c.run(ctx),
         }
     }
 }

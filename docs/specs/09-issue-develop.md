@@ -1,10 +1,10 @@
-# 09 — `rai issue fix`
+# 09 — `rai issue develop`
 
 Source issue: [#9](https://github.com/masseater/rai/issues/9)
 
 ## 目的
 
-GitHub Issue を起点に、専用の git worktree (`gwq`) と tmux session を立ち上げ、その中で agent CLI (Claude Code 等) を自動起動して、Issue を一気通貫で実装〜PR 作成まで自走させる。fish 関数 `gh-issue-fix` の Rust 移植。
+GitHub Issue を起点に、専用の git worktree (`gwq`) と tmux session を立ち上げ、その中で agent CLI (Claude Code 等) を自動起動して、Issue を一気通貫で開発〜PR 作成まで自走させる。fish 関数 `gh-issue-fix` の Rust 移植。
 
 ## 機能要件
 
@@ -15,7 +15,7 @@ GitHub Issue を起点に、専用の git worktree (`gwq`) と tmux session を�
   - `--repo OWNER/REPO` で上書き。
 - ブランチ名生成:
   - `-b/--branch` 指定があればそれを使う。
-  - 未指定の場合は issue title から slug を作成し、`fix/issue-<N>[-<slug>]-<YYYYMMDD-HHMMSS>` を生成。
+  - 未指定の場合は issue title から slug を作成し、`develop/issue-<N>[-<slug>]-<YYYYMMDD-HHMMSS>` を生成。
   - slug: lower → `[^a-z0-9]+` を `-` に → 前後 `-` 削除 → 先頭 40 文字。fish 版と同じ規則。
 - worktree (`gwq`):
   - 既存 `gwq get <branch>` がある場合は `attach / force-recreate / abort` の 3 択を tty で確認。
@@ -43,8 +43,8 @@ GitHub Issue を起点に、専用の git worktree (`gwq`) と tmux session を�
 ## 期待する成果物
 
 - `crates/cmd/rai-cmd-issue` crate (`rai issue *` を束ねる)。
-- `rai issue fix` を本体に配線。
-- README に fish からの移行手順 (`alias gh-issue-fix 'rai issue fix'`) を記載。
+- `rai issue develop` を本体に配線。
+- README に fish からの移行手順 (`alias gh-issue-fix 'rai issue develop'`) を記載。
 
 ## 非対象
 
