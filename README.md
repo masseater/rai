@@ -34,7 +34,7 @@ cargo install --path crates/rai
 | `rai dev`        | Pick a repo / worktree via `ghq` + `gwq` + `fzf`.                 |
 | `rai git`        | Git utility subcommands (autopull, track-mine, …).                |
 | `rai pr`         | GitHub Pull Request helpers.                                      |
-| `rai issue`      | Spin up worktree + tmux + agent from a GitHub Issue.              |
+| `rai issue`      | Develop from GitHub Issues and inventory issue lists with an agent. |
 | `rai gwq`        | gwq worktree cleanup helpers.                                     |
 | `rai conflicts`  | Long-running batch that resolves CONFLICTING PRs via an agent.    |
 | `rai completion` | Emit a shell completion script (bash / zsh / fish / powershell / elvish). |
@@ -47,6 +47,13 @@ If you previously used the fish function, point it at the `develop` subcommand:
 
 ```fish
 alias gh-issue-fix 'rai issue develop'
+```
+
+To inventory Issues without letting the AI fetch them, have `rai` collect the
+Issue JSON and pass the fixed prompt to your engine:
+
+```sh
+rai issue inventory --repo OWNER/REPO --engine-cmd "ccs_print c1"
 ```
 
 ## Shell Completion
