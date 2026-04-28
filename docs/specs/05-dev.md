@@ -1,4 +1,4 @@
-# 05 — `rai dev` (pick)
+# 05 — `rai dev`
 
 Source issue: [#5](https://github.com/masseater/rai/issues/5)
 
@@ -25,7 +25,7 @@ bin 単独では cd / tmux rename を起こせないので、fish 側に下記 w
 
 ```fish
 function dev --description "ghq/gwq + fzf"
-    set -l target (rai dev pick $argv)
+    set -l target (rai dev $argv)
     test -n "$target"; and cd $target
     set -q TMUX; and tmux rename-session (basename $target | string replace -a . -)
 end
@@ -33,7 +33,7 @@ end
 
 ## 受け入れ条件
 
-- [ ] `rai dev pick` が選択結果のフルパスを 1 行で stdout に出す。
+- [ ] `rai dev` が選択結果のフルパスを 1 行で stdout に出す。
 - [ ] 候補なしで exit 0 (silent)、fzf キャンセルで exit 130。
 - [ ] `--all` の有無で挙動が現行 fish 版と一致。
 - [ ] fish 側 wrapper を提供し、cd + tmux rename-session が動く。
@@ -41,7 +41,7 @@ end
 
 ## 期待する成果物
 
-- `crates/cmd/rai-cmd-dev` crate (`rai dev pick`)。
+- `crates/cmd/rai-cmd-dev` crate (`rai dev`)。
 - `rai dev` を `rai` 本体に配線。
 - README に fish wrapper のサンプルを記載 (移行手順込み)。
 

@@ -7,7 +7,14 @@ use clap::{CommandFactory, Parser, Subcommand};
 use rai_core::{cli::Run, logging, Ctx, Result};
 
 #[derive(Debug, Parser)]
-#[command(name = "rai", version, about, long_about = None, propagate_version = true)]
+#[command(
+    name = "rai",
+    version,
+    about,
+    long_about = None,
+    propagate_version = true,
+    disable_help_subcommand = true,
+)]
 struct Cli {
     /// Increase log verbosity (info → debug). `RAI_LOG` overrides this.
     #[arg(short, long, global = true)]
@@ -30,7 +37,7 @@ enum Cmd {
     Gh(rai_cmd_gh::Cmd),
     /// Claude Code (`claude` CLI) と連携するサブコマンド群。
     Claude(rai_cmd_claude::Cmd),
-    /// ghq + gwq + fzf でリポジトリ/worktree を選ぶサブコマンド群。
+    /// ghq + gwq + fzf でリポジトリ/worktree を選ぶ。
     Dev(rai_cmd_dev::Cmd),
     /// 開発支援用の git サブコマンド群 (autopull, track-mine)。
     Git(rai_cmd_git::Cmd),

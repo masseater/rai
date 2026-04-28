@@ -8,6 +8,7 @@ use clap::{Args, Subcommand};
 use rai_core::{cli::Run, Ctx, Result};
 
 #[derive(Debug, Args)]
+#[command(disable_help_subcommand = true)]
 pub struct Cmd {
     #[command(subcommand)]
     sub: GwqCmd,
