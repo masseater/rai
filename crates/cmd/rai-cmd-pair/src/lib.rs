@@ -16,6 +16,7 @@ use rai_core::{
 };
 
 const EXIT_TIMED_OUT: i32 = 124;
+const STATUS_LINES: u16 = 4;
 
 #[derive(Debug, Args)]
 pub struct Cmd {
@@ -56,7 +57,7 @@ impl Run for Cmd {
         let mut bar = if self.no_status_bar {
             None
         } else {
-            StatusBar::enable()?
+            StatusBar::enable(STATUS_LINES)?
         };
 
         let started_at = Instant::now();
@@ -107,7 +108,9 @@ impl Run for Cmd {
                     cycle,
                     self.max_cycles,
                     label,
-                    cmd,
+                    &self.command_a,
+                    &self.command_b,
+                    &cwd,
                     started_at,
                     max_seconds,
                 )?;
@@ -183,7 +186,9 @@ fn wait_with_bar(
     cycle: u32,
     max_cycles: u32,
     label: &str,
-    cmd: &str,
+    command_a: &str,
+    command_b: &str,
+    cwd: &str,
     started_at: Instant,
     max_seconds: u64,
 ) -> Result<i32> {
@@ -209,10 +214,15 @@ fn wait_with_bar(
             } else {
                 format!("{}s", max_seconds.saturating_sub(elapsed))
             };
-            let line = format!(
-                " cycle {cycle}/{max_cycles} | {label} running | elapsed={elapsed}s remaining={remaining_str} | {cmd} "
+            let mark_a = if label == "A" { "▶" } else { " " };
+            let mark_b = if label == "B" { "▶" } else { " " };
+            let line0 = format!(" cwd: {cwd} ");
+            let line1 = format!(
+                " cycle {cycle}/{max_cycles} | elapsed={elapsed}s remaining={remaining_str} "
             );
-            let _ = b.draw(&line);
+            let line2 = format!("{mark_a} command-a: {command_a} ");
+            let line3 = format!("{mark_b} command-b: {command_b} ");
+            let _ = b.draw(&[&line0, &line1, &line2, &line3]);
         }
 
         std::thread::sleep(Duration::from_millis(1000));

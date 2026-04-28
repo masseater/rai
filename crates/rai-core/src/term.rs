@@ -1,6 +1,6 @@
 //! ターミナル状態の安全な操作 (DECSTBM スクロール領域 + 下部ステータス行)。
 //!
-//! `StatusBar::enable()` で下段 1 行を確保 → ステータス行として使う。
+//! `StatusBar::enable(lines)` で下段 `lines` 行を確保 → ステータス行として使う。
 //! `Drop` で必ず元の状態 (full screen scroll region / autowrap on / 下段クリア) に戻す。
 //!
 //! - alt screen には入らない (DECSTBM だけで成立させる)
@@ -15,26 +15,29 @@ const ESC: &str = "\x1b";
 pub struct StatusBar {
     rows: u16,
     cols: u16,
-    last_msg: String,
+    lines: u16,
+    last_msgs: Vec<String>,
 }
 
 impl StatusBar {
-    /// 端末に状態行を確保する。tty でない / 行数 < 3 の場合は `Ok(None)`。
-    pub fn enable() -> io::Result<Option<Self>> {
-        if !io::stdout().is_terminal() {
+    /// 端末下部に `lines` 行のステータス領域を確保する。
+    /// tty でない / 行数が足りない / `lines == 0` の場合は `Ok(None)`。
+    pub fn enable(lines: u16) -> io::Result<Option<Self>> {
+        if lines == 0 || !io::stdout().is_terminal() {
             return Ok(None);
         }
         let (cols, rows) = match crossterm::terminal::size() {
             Ok(sz) => sz,
             Err(_) => return Ok(None),
         };
-        if rows < 3 {
+        if rows < lines + 2 {
             return Ok(None);
         }
         let bar = Self {
             rows,
             cols,
-            last_msg: String::new(),
+            lines,
+            last_msgs: vec![String::new(); lines as usize],
         };
         bar.apply_region()?;
         Ok(Some(bar))
@@ -46,8 +49,9 @@ impl StatusBar {
         let mut out = io::stdout().lock();
         // autowrap off (DECAWM)
         write!(out, "{ESC}[?7l")?;
-        // scroll region: 1..rows-1 (1-indexed)。下端 1 行 (rows) を status 用に空ける。
-        write!(out, "{ESC}[1;{}r", self.rows.saturating_sub(1))?;
+        // scroll region: 1..rows-lines (1-indexed)。下端 lines 行を status 用に空ける。
+        let scroll_bottom = self.rows.saturating_sub(self.lines).max(1);
+        write!(out, "{ESC}[1;{scroll_bottom}r")?;
         // カーソルを領域内に戻す。
         write!(out, "{ESC}[1;1H")?;
         out.flush()
@@ -59,21 +63,35 @@ impl StatusBar {
         self.cols = cols;
         self.rows = rows;
         self.apply_region()?;
-        let last = self.last_msg.clone();
-        self.draw(&last)
+        let last: Vec<String> = self.last_msgs.clone();
+        let refs: Vec<&str> = last.iter().map(String::as_str).collect();
+        self.draw(&refs)
     }
 
-    /// 状態行を 1 回描く。`msg` は端末幅で切り詰める。
-    pub fn draw(&mut self, msg: &str) -> io::Result<()> {
-        let trunc = truncate(msg, self.cols as usize);
+    /// 状態行を 1 回描く。`msgs[i]` は status 領域の上から i 行目に対応する。
+    /// 各行は端末幅で切り詰める。
+    pub fn draw(&mut self, msgs: &[&str]) -> io::Result<()> {
         let mut out = io::stdout().lock();
         write!(out, "{ESC}7")?; // DECSC: save cursor
-        write!(out, "{ESC}[{};1H", self.rows)?; // move to bottom-left
-        write!(out, "{ESC}[2K")?; // clear entire line
-        write!(out, "{ESC}[7m{}{ESC}[0m", trunc)?; // reverse video
+        for i in 0..self.lines {
+            let row = self.rows.saturating_sub(self.lines).saturating_add(1 + i);
+            let msg = msgs.get(i as usize).copied().unwrap_or("");
+            let trunc = truncate(msg, self.cols as usize);
+            write!(out, "{ESC}[{row};1H")?;
+            write!(out, "{ESC}[2K")?; // clear entire line
+            write!(out, "{ESC}[7m{trunc}{ESC}[0m")?; // reverse video
+        }
         write!(out, "{ESC}8")?; // DECRC: restore cursor
         out.flush()?;
-        self.last_msg = msg.to_string();
+        let mut next: Vec<String> = msgs
+            .iter()
+            .take(self.lines as usize)
+            .map(|s| (*s).to_string())
+            .collect();
+        while next.len() < self.lines as usize {
+            next.push(String::new());
+        }
+        self.last_msgs = next;
         Ok(())
     }
 }
@@ -84,8 +102,11 @@ impl Drop for StatusBar {
         let mut out = io::stdout();
         let _ = write!(out, "{ESC}[r"); // scroll region 解除
         let _ = write!(out, "{ESC}[?7h"); // autowrap 復活
-        let _ = write!(out, "{ESC}[{};1H", self.rows); // bottom row
-        let _ = write!(out, "{ESC}[2K"); // status row clear
+        for i in 0..self.lines {
+            let row = self.rows.saturating_sub(i);
+            let _ = write!(out, "{ESC}[{row};1H");
+            let _ = write!(out, "{ESC}[2K");
+        }
         let _ = out.flush();
     }
 }
