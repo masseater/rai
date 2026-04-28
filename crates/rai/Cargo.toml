@@ -1,6 +1,7 @@
 [package]
 name = "rai"
 description = "rai — an extensible personal CLI."
+homepage = "https://github.com/masseater/rai"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
