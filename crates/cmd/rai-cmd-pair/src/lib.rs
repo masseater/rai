@@ -66,15 +66,21 @@ impl Run for Cmd {
         let cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "?".to_string());
-        ts::println(format!(
-            "started cwd={cwd} cmd_a={:?} cmd_b={:?} max_cycles={} max_hours={}",
-            self.command_a, self.command_b, self.max_cycles, self.max_hours,
-        ));
+        log(
+            &mut bar,
+            format!(
+                "started cwd={cwd} cmd_a={:?} cmd_b={:?} max_cycles={} max_hours={}",
+                self.command_a, self.command_b, self.max_cycles, self.max_hours,
+            ),
+        );
 
         let mut exit_code: i32 = 0;
 
         'outer: for cycle in 1..=self.max_cycles {
-            ts::println(format!("cycle {cycle}/{} started", self.max_cycles));
+            log(
+                &mut bar,
+                format!("cycle {cycle}/{} started", self.max_cycles),
+            );
 
             for (label, cmd) in [("A", &self.command_a), ("B", &self.command_b)] {
                 if signal_slot.load(Ordering::SeqCst) != 0 {
@@ -88,14 +94,31 @@ impl Run for Cmd {
                     max_seconds.saturating_sub(elapsed)
                 };
                 if max_seconds != 0 && remaining == 0 {
-                    ts::println("max-hours reached before command");
+                    log(&mut bar, "max-hours reached before command");
                     exit_code = EXIT_TIMED_OUT;
                     break 'outer;
                 }
 
-                ts::println(format!(
-                    "command {label} starting cycle={cycle} elapsed={elapsed}s remaining={remaining}s cmd={cmd:?}"
-                ));
+                log(
+                    &mut bar,
+                    format!(
+                        "command {label} starting cycle={cycle} elapsed={elapsed}s remaining={remaining}s cmd={cmd:?}"
+                    ),
+                );
+
+                if let Some(b) = bar.as_mut() {
+                    let _ = draw_status(
+                        b,
+                        cycle,
+                        self.max_cycles,
+                        label,
+                        &self.command_a,
+                        &self.command_b,
+                        &cwd,
+                        started_at,
+                        max_seconds,
+                    );
+                }
 
                 let cmd_started = Instant::now();
                 let mut child =
@@ -116,25 +139,31 @@ impl Run for Cmd {
                 )?;
 
                 // 子の終了直後はスクロール領域が壊れている可能性があるので再適用。
-                if let Some(b) = bar.as_ref() {
-                    let _ = b.apply_region();
+                if let Some(b) = bar.as_mut() {
+                    let _ = b.resume();
                 }
 
                 let cmd_elapsed = cmd_started.elapsed().as_secs();
-                ts::println(format!(
-                    "command {label} exited status={status_int} cmd_elapsed={cmd_elapsed}s"
-                ));
+                log(
+                    &mut bar,
+                    format!(
+                        "command {label} exited status={status_int} cmd_elapsed={cmd_elapsed}s"
+                    ),
+                );
 
                 if status_int != 0 {
                     if status_int == EXIT_TIMED_OUT {
-                        ts::println("max-hours reached during command");
+                        log(&mut bar, "max-hours reached during command");
                     }
                     exit_code = status_int;
                     break 'outer;
                 }
             }
 
-            ts::println(format!("cycle {cycle}/{} completed", self.max_cycles));
+            log(
+                &mut bar,
+                format!("cycle {cycle}/{} completed", self.max_cycles),
+            );
         }
 
         // ステータスバーを明示的に drop して端末を戻す
@@ -151,6 +180,13 @@ impl Run for Cmd {
 
         std::process::exit(exit_code);
     }
+}
+
+fn log(bar: &mut Option<StatusBar>, msg: impl AsRef<str>) {
+    if let Some(b) = bar.as_ref() {
+        let _ = b.prepare_output();
+    }
+    ts::println(msg);
 }
 
 fn spawn_child(
@@ -192,6 +228,7 @@ fn wait_with_bar(
     started_at: Instant,
     max_seconds: u64,
 ) -> Result<i32> {
+    let mut next_draw = Instant::now();
     loop {
         if let Some(status) = child.try_wait()? {
             return Ok(proc::shell_exit_code(&status));
@@ -207,24 +244,52 @@ fn wait_with_bar(
             return Ok(proc::shell_exit_code(&status));
         }
 
-        if let Some(b) = bar.as_mut() {
-            let elapsed = started_at.elapsed().as_secs();
-            let remaining_str = if max_seconds == 0 {
-                "∞".to_string()
-            } else {
-                format!("{}s", max_seconds.saturating_sub(elapsed))
-            };
-            let mark_a = if label == "A" { "▶" } else { " " };
-            let mark_b = if label == "B" { "▶" } else { " " };
-            let line0 = format!(" cwd: {cwd} ");
-            let line1 = format!(
-                " cycle {cycle}/{max_cycles} | elapsed={elapsed}s remaining={remaining_str} "
-            );
-            let line2 = format!("{mark_a} command-a: {command_a} ");
-            let line3 = format!("{mark_b} command-b: {command_b} ");
-            let _ = b.draw(&[&line0, &line1, &line2, &line3]);
+        let now = Instant::now();
+        if now >= next_draw {
+            if let Some(b) = bar.as_mut() {
+                let _ = draw_status(
+                    b,
+                    cycle,
+                    max_cycles,
+                    label,
+                    command_a,
+                    command_b,
+                    cwd,
+                    started_at,
+                    max_seconds,
+                );
+            }
+            next_draw = now + Duration::from_secs(1);
         }
 
-        std::thread::sleep(Duration::from_millis(1000));
+        std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_status(
+    bar: &mut StatusBar,
+    cycle: u32,
+    max_cycles: u32,
+    label: &str,
+    command_a: &str,
+    command_b: &str,
+    cwd: &str,
+    started_at: Instant,
+    max_seconds: u64,
+) -> std::io::Result<()> {
+    let elapsed = started_at.elapsed().as_secs();
+    let remaining_str = if max_seconds == 0 {
+        "∞".to_string()
+    } else {
+        format!("{}s", max_seconds.saturating_sub(elapsed))
+    };
+    let mark_a = if label == "A" { "▶" } else { " " };
+    let mark_b = if label == "B" { "▶" } else { " " };
+    let line0 = format!(" cwd: {cwd} ");
+    let line1 =
+        format!(" cycle {cycle}/{max_cycles} | elapsed={elapsed}s remaining={remaining_str} ");
+    let line2 = format!("{mark_a} command-a: {command_a} ");
+    let line3 = format!("{mark_b} command-b: {command_b} ");
+    bar.draw(&[&line0, &line1, &line2, &line3])
 }

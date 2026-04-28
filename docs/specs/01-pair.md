@@ -18,6 +18,9 @@ Source issue: [#1](https://github.com/masseater/rai/issues/1)
 - 子プロセスが non-zero で終わったら以後は実行せず、その exit code で終了する。
 - 実行中はターミナル下部に状態を 1Hz で更新表示する。表示内容は最低限「`cycle X/N | <A|B> running | elapsed=…s remaining=…s | <cmd 先頭>`」。
 - 上部スクロール領域は子プロセスの stdout/stderr が通常通り流れる。
+- 下部ステータス領域は起動直後にクリアされ、過去のコマンド出力や前回の表示が残らない。
+- `rai pair` 自身のログと子プロセスのログは、下部ステータス領域を避けたスクロール領域へ流れる。
+- ステータス表示は必要な行だけを更新し、通常の 1Hz 更新で視認できるちらつきを起こさない。
 - `--no-status-bar` で固定表示を完全に無効化し、現行 fish 版と同じ振る舞いになる。
 - 出力ログは `[YYYY-MM-DD HH:MM:SS] message` 形式 (現行 fish 版と互換)。
 - 標準出力/標準エラーが tty でない場合は自動で `--no-status-bar` 相当に degrade する。
@@ -48,6 +51,8 @@ rai pair --command-a '<cmd>' --command-b '<cmd>'
 ## 受け入れ条件
 
 - [ ] `rai pair --command-a 'sleep 5' --command-b 'sleep 5' --max-cycles 2` で下段に状態が常駐し、上段に出力が流れる。
+- [ ] `rai pair --command-a 'printf "a\n"' --command-b 'printf "b\n"' --max-cycles 2` で各コマンドのログが下部ステータス領域へ残らない。
+- [ ] ステータス行は 1Hz 更新中に毎回全消去されず、変更がない行は再描画されない。
 - [ ] 実行中に Ctrl-C で端末が完全に元通り (autowrap / scroll region / カーソル / 余白行)。
 - [ ] 子で `vim` を起動して `:q` 後、状態行が壊れずに復活する。
 - [ ] 子で `htop` を強制 kill しても端末が戻る。
