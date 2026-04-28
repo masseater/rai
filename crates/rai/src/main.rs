@@ -3,7 +3,7 @@
 //! Keep this file thin: it should only parse args, set up the runtime
 //! context, and dispatch to a subcommand crate.
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use rai_core::{cli::Run, logging, Ctx, Result};
 
 #[derive(Debug, Parser)]
@@ -42,6 +42,8 @@ enum Cmd {
     Gwq(rai_cmd_gwq::Cmd),
     /// CONFLICTING な PR を agent CLI で自動解消する長時間バッチ。
     Conflicts(rai_cmd_conflicts::Cmd),
+    /// 指定シェル向けの補完スクリプトを stdout に出力する。
+    Completion(rai_cmd_completion::Cmd),
 }
 
 impl Run for Cmd {
@@ -58,6 +60,7 @@ impl Run for Cmd {
             Cmd::Issue(c) => c.run(ctx),
             Cmd::Gwq(c) => c.run(ctx),
             Cmd::Conflicts(c) => c.run(ctx),
+            Cmd::Completion(c) => c.print(&mut Cli::command()),
         }
     }
 }

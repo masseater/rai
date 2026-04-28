@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -28,9 +28,11 @@ rai-cmd-pr = { path = "crates/cmd/rai-cmd-pr", version = "0.1.0" }
 rai-cmd-issue = { path = "crates/cmd/rai-cmd-issue", version = "0.1.0" }
 rai-cmd-gwq = { path = "crates/cmd/rai-cmd-gwq", version = "0.1.0" }
 rai-cmd-conflicts = { path = "crates/cmd/rai-cmd-conflicts", version = "0.1.0" }
+rai-cmd-completion = { path = "crates/cmd/rai-cmd-completion", version = "0.1.0" }
 
 # 外部crate（共通バージョン）
 clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
+clap_complete = "4.5"
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"

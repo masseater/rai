@@ -1,91 +1,86 @@
 # rai
 
-`rai` は拡張可能な個人用 CLI です。`rai <subcommand>` を増やしていく前提で
-Cargo workspace の monorepo として構成されています。
+An extensible personal CLI for the author's day-to-day workflow.
 
-## 構成
+## Overview
 
-```
-rai/
-├─ Cargo.toml                 # workspace ルート（共通依存・プロファイル）
-├─ crates/
-│  ├─ rai/                    # バイナリ。引数パースと dispatch だけを担う
-│  ├─ rai-core/               # 共通基盤 (Run trait, logging, Ctx)
-│  └─ cmd/
-│     └─ rai-cmd-hello/       # サブコマンド 1 つにつき 1 crate
-└─ .github/workflows/
-   ├─ ci.yml                  # fmt / clippy / test (Linux & macOS)
-   └─ release.yml             # tag push でクロスビルド & Homebrew 更新
-```
+`rai` ships as a single binary that dispatches to subcommands wrapping tools the
+author uses constantly (git, gh, gwq, claude, etc.). The repository is a Cargo
+workspace where each `rai <subcommand>` lives in its own library crate, so new
+commands can be added by editing one enum variant and one match arm.
 
-設計の肝:
-
-- バイナリは `rai` のみ。サブコマンドはすべて library crate。
-- 各サブコマンドは `clap::Args` 構造体を公開し、`rai_core::cli::Run` を実装する。
-- `crates/rai/src/main.rs` の `Cmd` enum に variant を 1 行足すだけで配線完了。
-- 共通依存は workspace dependencies で集約。crate 側は `clap.workspace = true` のように書く。
-
-## 使い方
-
-```sh
-cargo run -p rai -- hello
-cargo run -p rai -- hello rai
-cargo run -p rai -- --verbose hello
-```
-
-ログレベルは `RAI_LOG=debug rai hello` のように `RAI_LOG` で上書き可能。
-
-## サブコマンドの追加手順
-
-1. テンプレートを複製する:
-   ```sh
-   cp -r crates/cmd/rai-cmd-hello crates/cmd/rai-cmd-<name>
-   ```
-2. `crates/cmd/rai-cmd-<name>/Cargo.toml` の `name` と
-   `src/lib.rs` の型・処理を新サブコマンド用に書き換える。
-3. ルート `Cargo.toml` の `[workspace.dependencies]` に
-   `rai-cmd-<name> = { path = "crates/cmd/rai-cmd-<name>", version = "0.1.0" }` を追加。
-4. `crates/rai/Cargo.toml` の `[dependencies]` に
-   `rai-cmd-<name>.workspace = true` を追加。
-5. `crates/rai/src/main.rs` の `Cmd` enum に variant を 1 つ、
-   `Run::run` の match に 1 行足す。
-
-これだけで `rai <name>` が生える。
-
-## 開発
-
-```sh
-cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-```
-
-CI (`.github/workflows/ci.yml`) で同じことを Linux / macOS で回している。
-
-## リリースと Homebrew 配布
-
-`v*` タグを push すると `.github/workflows/release.yml` が走り、
-macOS (arm64 / x86_64) と Linux (arm64 / x86_64) のバイナリを
-GitHub Release に公開する。
-
-Homebrew tap を有効化するには:
-
-1. tap リポジトリ `masseater/homebrew-rai` を作成し `Formula/rai.rb` を置く。
-2. tap への push 権限を持つ PAT を本リポジトリに
-   `HOMEBREW_TAP_TOKEN` シークレットとして登録する。
-3. リポジトリ変数 `ENABLE_HOMEBREW_BUMP` を `true` にする。
-
-これで release ジョブの後段が tap の Formula を自動更新する。
-
-ユーザは:
+## Installation
 
 ```sh
 brew tap masseater/rai
 brew install rai
 ```
 
-でインストールできるようになる。
+Or build from source:
 
-## ライセンス
+```sh
+cargo install --path crates/rai
+```
+
+## Subcommands
+
+| Command          | Description                                                       |
+| ---------------- | ----------------------------------------------------------------- |
+| `rai hello`      | Sample subcommand and template for new commands.                  |
+| `rai pair`       | Run two commands in alternation with a fixed status bar.          |
+| `rai date`       | Thin date formatter compatible with the fish `mydate` function.   |
+| `rai gh`         | GitHub CLI (`gh`) helpers.                                        |
+| `rai claude`     | Claude Code (`claude` CLI) helpers.                               |
+| `rai dev`        | Pick a repo / worktree via `ghq` + `gwq` + `fzf`.                 |
+| `rai git`        | Git utility subcommands (autopull, track-mine, …).                |
+| `rai pr`         | GitHub Pull Request helpers.                                      |
+| `rai issue`      | Spin up worktree + tmux + agent from a GitHub Issue.              |
+| `rai gwq`        | gwq worktree cleanup helpers.                                     |
+| `rai conflicts`  | Long-running batch that resolves CONFLICTING PRs via an agent.    |
+| `rai completion` | Emit a shell completion script (bash / zsh / fish / powershell / elvish). |
+
+Run `rai <subcommand> --help` for details on each.
+
+## Shell Completion
+
+`rai completion <shell>` writes a completion script to stdout. The definition
+is generated from the binary's clap command tree, so adding a subcommand and
+rebuilding is enough to refresh the completions.
+
+```sh
+# fish
+rai completion fish | source
+# Persist:
+rai completion fish > ~/.config/fish/completions/rai.fish
+
+# zsh (drop into a directory on $fpath)
+rai completion zsh > "${fpath[1]}/_rai"
+
+# bash
+rai completion bash > ~/.local/share/bash-completion/completions/rai
+# Or load on the fly:
+source <(rai completion bash)
+```
+
+## Development Commands
+
+| Command                                                 | Description                          |
+| ------------------------------------------------------- | ------------------------------------ |
+| `cargo fmt --all`                                       | Format the workspace                 |
+| `cargo clippy --workspace --all-targets -- -D warnings` | Lint with warnings promoted to errors |
+| `cargo test --workspace`                                | Run all tests                        |
+| `cargo run -p rai -- <subcommand>`                      | Run a subcommand locally             |
+
+> Development commands last updated: 2026-04-28
+
+For details on layout, conventions, and how to add a subcommand, see
+[AGENTS.md](AGENTS.md).
+
+## Related Links
+
+- Specs: [`docs/specs/`](docs/specs/)
+- Homebrew tap: [`masseater/homebrew-rai`](https://github.com/masseater/homebrew-rai)
+
+## License
 
 MIT OR Apache-2.0

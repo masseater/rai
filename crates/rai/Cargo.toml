@@ -25,5 +25,6 @@ rai-cmd-pr.workspace = true
 rai-cmd-issue.workspace = true
 rai-cmd-gwq.workspace = true
 rai-cmd-conflicts.workspace = true
+rai-cmd-completion.workspace = true
 clap.workspace = true
 anyhow.workspace = true
