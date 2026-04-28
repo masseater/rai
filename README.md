@@ -52,22 +52,25 @@ alias gh-issue-fix 'rai issue develop'
 ## Shell Completion
 
 `rai completion <shell>` writes a completion script to stdout. The definition
-is generated from the binary's clap command tree, so adding a subcommand and
-rebuilding is enough to refresh the completions.
+is generated from the binary's clap command tree.
+
+For persistent setup, prefer `--source`: it prints a small rc/config snippet
+that reloads completions from the current `rai` binary when a new shell starts,
+so completions follow upgrades and newly added subcommands automatically.
 
 ```sh
 # fish
 rai completion fish | source
-# Persist:
-rai completion fish > ~/.config/fish/completions/rai.fish
+# Persist in ~/.config/fish/config.fish:
+rai completion --source fish >> ~/.config/fish/config.fish
 
-# zsh (drop into a directory on $fpath)
-rai completion zsh > "${fpath[1]}/_rai"
+# zsh (append the output to ~/.zshrc)
+rai completion --source zsh >> ~/.zshrc
 
 # bash
-rai completion bash > ~/.local/share/bash-completion/completions/rai
-# Or load on the fly:
 source <(rai completion bash)
+# Persist in ~/.bashrc:
+rai completion --source bash >> ~/.bashrc
 ```
 
 ## Development Commands
