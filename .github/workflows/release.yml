@@ -1,0 +1,115 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN: rai
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest,  target: aarch64-apple-darwin }
+          - { os: macos-13,      target: x86_64-apple-darwin }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-latest, target: aarch64-unknown-linux-gnu, cross: true }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Build
+        env:
+          TARGET: ${{ matrix.target }}
+          USE_CROSS: ${{ matrix.cross && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          if [ "$USE_CROSS" = "1" ]; then
+            cross build --release --target "$TARGET" -p rai
+          else
+            cargo build --release --target "$TARGET" -p rai
+          fi
+
+      - name: Package
+        id: pkg
+        env:
+          TARGET: ${{ matrix.target }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          name="${BIN}-${REF_NAME}-${TARGET}"
+          staging="dist/${name}"
+          mkdir -p "$staging"
+          cp "target/${TARGET}/release/${BIN}" "$staging/"
+          cp README.md "$staging/" 2>/dev/null || true
+          tar -czf "dist/${name}.tar.gz" -C dist "$name"
+          ( cd dist && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256" )
+          echo "asset=dist/${name}.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "sha=dist/${name}.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            ${{ steps.pkg.outputs.asset }}
+            ${{ steps.pkg.outputs.sha }}
+
+  release:
+    name: github release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create / update release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+          generate_release_notes: true
+
+  # Bumps the formula in `masseater/homebrew-rai`. Gated on the repo variable
+  # `ENABLE_HOMEBREW_BUMP` so the first releases can ship before the tap exists.
+  # Required setup:
+  #   - Create the tap repo `masseater/homebrew-rai` with a `Formula/rai.rb`.
+  #   - Add a PAT with `contents: write` on the tap as secret `HOMEBREW_TAP_TOKEN`.
+  #   - Set repo variable `ENABLE_HOMEBREW_BUMP=true`.
+  homebrew:
+    name: bump homebrew tap
+    needs: release
+    if: ${{ vars.ENABLE_HOMEBREW_BUMP == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Bump formula
+        uses: mislav/bump-homebrew-formula-action@v4
+        env:
+          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        with:
+          formula-name: rai
+          formula-path: Formula/rai.rb
+          homebrew-tap: masseater/homebrew-rai
+          download-url: https://github.com/masseater/rai/releases/download/${{ github.ref_name }}/rai-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz

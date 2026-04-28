@@ -1,0 +1,19 @@
+[package]
+name = "rai"
+description = "rai — an extensible personal CLI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "rai"
+path = "src/main.rs"
+
+[dependencies]
+rai-core.workspace = true
+rai-cmd-hello.workspace = true
+clap.workspace = true
+anyhow.workspace = true
