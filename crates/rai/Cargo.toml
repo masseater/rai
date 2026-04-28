@@ -15,5 +15,15 @@ path = "src/main.rs"
 [dependencies]
 rai-core.workspace = true
 rai-cmd-hello.workspace = true
+rai-cmd-pair.workspace = true
+rai-cmd-date.workspace = true
+rai-cmd-gh.workspace = true
+rai-cmd-claude.workspace = true
+rai-cmd-dev.workspace = true
+rai-cmd-git.workspace = true
+rai-cmd-pr.workspace = true
+rai-cmd-issue.workspace = true
+rai-cmd-gwq.workspace = true
+rai-cmd-conflicts.workspace = true
 clap.workspace = true
 anyhow.workspace = true

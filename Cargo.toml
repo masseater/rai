@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -18,6 +18,16 @@ authors = ["masseater"]
 # 内部crate
 rai-core = { path = "crates/rai-core", version = "0.1.0" }
 rai-cmd-hello = { path = "crates/cmd/rai-cmd-hello", version = "0.1.0" }
+rai-cmd-pair = { path = "crates/cmd/rai-cmd-pair", version = "0.1.0" }
+rai-cmd-date = { path = "crates/cmd/rai-cmd-date", version = "0.1.0" }
+rai-cmd-gh = { path = "crates/cmd/rai-cmd-gh", version = "0.1.0" }
+rai-cmd-claude = { path = "crates/cmd/rai-cmd-claude", version = "0.1.0" }
+rai-cmd-dev = { path = "crates/cmd/rai-cmd-dev", version = "0.1.0" }
+rai-cmd-git = { path = "crates/cmd/rai-cmd-git", version = "0.1.0" }
+rai-cmd-pr = { path = "crates/cmd/rai-cmd-pr", version = "0.1.0" }
+rai-cmd-issue = { path = "crates/cmd/rai-cmd-issue", version = "0.1.0" }
+rai-cmd-gwq = { path = "crates/cmd/rai-cmd-gwq", version = "0.1.0" }
+rai-cmd-conflicts = { path = "crates/cmd/rai-cmd-conflicts", version = "0.1.0" }
 
 # 外部crate（共通バージョン）
 clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
@@ -27,6 +37,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+crossterm = "0.28"
+signal-hook = "0.3"
+shell-words = "1"
+libc = "0.2"
+fs2 = "0.4"
 
 [profile.release]
 lto = "thin"

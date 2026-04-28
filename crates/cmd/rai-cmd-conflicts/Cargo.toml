@@ -1,0 +1,19 @@
+[package]
+name = "rai-cmd-conflicts"
+description = "`rai conflicts` — CONFLICTING な PR を agent CLI で自動解消する長時間バッチ。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+rai-core.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+shell-words.workspace = true
+fs2.workspace = true

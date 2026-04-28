@@ -1,0 +1,16 @@
+[package]
+name = "rai-cmd-pair"
+description = "`rai pair` — 2 つのコマンドを交互に実行し続けるループ + 下部固定ステータスバー。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+rai-core.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+libc.workspace = true
