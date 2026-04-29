@@ -1,6 +1,6 @@
 # 09 — `rai issue develop`
 
-Source issue: [#9](https://github.com/masseater/rai/issues/9)
+Source issues: [#9](https://github.com/masseater/rai/issues/9), [#13](https://github.com/masseater/rai/issues/13)
 
 ## 目的
 
@@ -25,12 +25,24 @@ GitHub Issue を起点に、専用の git worktree (`gwq`) と tmux session を�
     - abort: exit 130。
   - 新規時は `gwq add -b <branch>`。
 - agent 実行:
-  - prompt は固定文 (issue URL を一気通貫で実装し、`gh pr create` まで自走するよう指示する内容)。
+  - prompt は固定文 (issue URL を一気通貫で実装し、ローカル検証まで自走するよう指示する内容)。
   - 既定の engine_cmd は fish 版互換 (`ccs_print c1`)。`-e/--engine-cmd CMD` で上書き可能。
   - prompt は `--prompt-template FILE` でファイルから読める。
   - `tmux new-session -d -s gwq-run-issue-<N>-<ts> -c <wt-path> <full_cmd>` で起動。
   - 複数 Issue 選択時は Issue ごとに worktree と tmux session を作成する。
   - `--no-tmux` で tmux を介さず前面実行 (デバッグ用)。
+- agent 終了後の自動公開:
+  - agent が正常終了し、worktree に未コミット変更が残っている場合は自動で commit する。
+  - agent が正常終了し、PR 化できるローカル commit がある場合は自動で push し、`gh pr create` で PR を作成する。
+  - 既に同じ branch の PR がある場合は重複作成しない。
+  - agent が異常終了した場合は自動 commit / push / PR 作成を行わない。
+  - agent が正常終了し、未コミット変更も push 対象 commit も無い (= worktree が空) 場合は `gwq remove --force <branch>` で worktree を自動的に片付ける。
+  - `--no-auto-publish` で agent 終了後の commit / push / PR 作成を無効化できる。
+  - `--pr-base BRANCH` で PR の base branch を指定できる。
+- agent 権限モード:
+  - `--permission-mode MODE` で agent (`claude`) の `--permission-mode` を明示できる。
+  - 受理する MODE: `acceptEdits` / `auto` / `bypassPermissions` / `default` / `dontAsk` / `plan`。
+  - 未指定なら engine_cmd の既定挙動に委ねる。
 - ロールバック: gwq add 後 tmux 起動失敗 → `gwq remove` で巻き戻す。
 
 ## 受け入れ条件
@@ -42,6 +54,13 @@ GitHub Issue を起点に、専用の git worktree (`gwq`) と tmux session を�
 - [ ] branch 名生成が現行 fish 版と一致 (slug 規則, ts 形式)。
 - [ ] gwq existing 時の attach / force-recreate / abort が動く。
 - [ ] tmux session が `gwq-run-issue-<N>-<ts>` で立ち上がり、`-c` で worktree path に cd される。
+- [ ] agent 正常終了後に未コミット変更があれば自動で commit される。
+- [ ] agent 正常終了後にローカル commit があれば push され、`gh pr create` で PR が作成される。
+- [ ] 同じ branch の PR が既にある場合は PR を重複作成しない。
+- [ ] agent 異常終了時は自動 commit / push / PR 作成を行わない。
+- [ ] `--no-auto-publish` で agent 終了後の自動公開を無効化できる。
+- [ ] agent 正常終了後に未コミット変更も push 対象 commit も無い場合は worktree が `gwq remove` で自動削除される。
+- [ ] `--permission-mode MODE` を渡すと agent コマンドへ `--permission-mode <MODE>` が伝搬される。
 - [ ] tmux 起動失敗時に worktree が残らない (ロールバック)。
 
 ## 期待する成果物
