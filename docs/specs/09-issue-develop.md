@@ -26,9 +26,16 @@ GitHub Issue を起点に、専用の git worktree (`gwq`) と tmux session を�
   - 新規時は `gwq add -b <branch>`。
 - agent 実行:
   - prompt は固定文 (issue URL を一気通貫で実装し、ローカル検証まで自走するよう指示する内容)。
-  - 既定の engine_cmd は fish 版互換 (`ccs_print c1`)。`-e/--engine-cmd CMD` で上書き可能。
+  - 既定の engine_cmd は実バイナリのみで構成されたパイプライン:
+    `ccs c1 --print --output-format stream-json --verbose {PERMISSION_MODE} -- {PROMPT} | {RAI} claude format`。
+    `tmux` の `default-shell` (zsh / bash) からも fish 関数に依存せず実行できる。
+  - `-e/--engine-cmd CMD` で上書き可能。プレースホルダ `{PROMPT}` / `{PERMISSION_MODE}` /
+    `{RAI}` を含む場合はそれぞれ shell-quote 済み prompt / `--permission-mode <MODE>` (空可) /
+    現在の `rai` バイナリ絶対パスへ置換する。プレースホルダを 1 つも含まない場合は legacy 互換で
+    末尾に `--permission-mode <MODE>` と prompt を append する。
   - prompt は `--prompt-template FILE` でファイルから読める。
   - `tmux new-session -d -s gwq-run-issue-<N>-<ts> -c <wt-path> <full_cmd>` で起動。
+    `<full_cmd>` は `set -o pipefail; (...)` で囲み、パイプライン途中の失敗を取り逃さないようにする。
   - 複数 Issue 選択時は Issue ごとに worktree と tmux session を作成する。
   - `--no-tmux` で tmux を介さず前面実行 (デバッグ用)。
 - agent 終了後の自動公開:
@@ -61,6 +68,8 @@ GitHub Issue を起点に、専用の git worktree (`gwq`) と tmux session を�
 - [ ] `--no-auto-publish` で agent 終了後の自動公開を無効化できる。
 - [ ] agent 正常終了後に未コミット変更も push 対象 commit も無い場合は worktree が `gwq remove` で自動削除される。
 - [ ] `--permission-mode MODE` を渡すと agent コマンドへ `--permission-mode <MODE>` が伝搬される。
+- [ ] 既定 engine_cmd が fish 関数等の shell 固有機能に依存せず、tmux の default-shell が zsh/bash
+      でも実行できる (実バイナリのみ)。
 - [ ] tmux 起動失敗時に worktree が残らない (ロールバック)。
 
 ## 期待する成果物

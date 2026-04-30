@@ -11,6 +11,8 @@ use clap::{Args, ValueEnum};
 use rai_core::{cli::Run, Ctx, Result};
 use serde::Deserialize;
 
+const DEFAULT_ENGINE_CMD: &str = "ccs c1 --print --output-format stream-json --verbose {PERMISSION_MODE} -- {PROMPT} | {RAI} claude format";
+
 #[derive(Debug, Args)]
 pub struct Cmd {
     /// Issue 識別子: 番号 / URL / 省略 (省略時は fzf 複数選択)。
@@ -26,7 +28,20 @@ pub struct Cmd {
     branch: Option<String>,
 
     /// agent CLI の起動コマンド (shell 文字列)。
-    #[arg(long, short = 'e', value_name = "CMD", default_value = "ccs_print c1")]
+    ///
+    /// プレースホルダ:
+    /// - `{PROMPT}`        : 現 issue のプロンプト (shell-quoted)
+    /// - `{PERMISSION_MODE}`: `--permission-mode <MODE>` 一式 (`--permission-mode` 未指定なら空)
+    /// - `{RAI}`           : 実行中の `rai` バイナリ絶対パス (shell-quoted)
+    ///
+    /// プレースホルダを 1 つも含まない文字列を渡した場合は legacy 互換動作で末尾に
+    /// `{PERMISSION_MODE}` と `{PROMPT}` を append する。
+    #[arg(
+        long,
+        short = 'e',
+        value_name = "CMD",
+        default_value = DEFAULT_ENGINE_CMD
+    )]
     engine_cmd: String,
 
     /// prompt をファイルから読み込む。
@@ -176,8 +191,10 @@ fn run_one(cmd: &Cmd, issue: &Issue) -> Result<()> {
     } else {
         Some(build_finalize_command(cmd, issue, &branch)?)
     };
+    let exe = std::env::current_exe().context("failed to resolve current executable")?;
+    let rai_exe = exe.display().to_string();
     let engine_cmd = build_engine_cmd(&cmd.engine_cmd, cmd.permission_mode);
-    let full_cmd = build_agent_shell_command(&engine_cmd, &prompt, finalizer.as_deref());
+    let full_cmd = build_agent_shell_command(&engine_cmd, &prompt, &rai_exe, finalizer.as_deref());
 
     if cmd.no_tmux {
         let status = Command::new("sh")
@@ -536,19 +553,40 @@ fn build_prompt(
 }
 
 fn build_engine_cmd(engine_cmd: &str, permission_mode: Option<PermissionMode>) -> String {
-    match permission_mode {
-        Some(mode) => format!("{engine_cmd} --permission-mode {}", mode.as_arg()),
-        None => engine_cmd.to_string(),
+    let flag = match permission_mode {
+        Some(mode) => format!("--permission-mode {}", mode.as_arg()),
+        None => String::new(),
+    };
+    if engine_cmd.contains("{PERMISSION_MODE}") {
+        return engine_cmd.replace("{PERMISSION_MODE}", &flag);
+    }
+    if let Some(mode) = permission_mode {
+        format!("{engine_cmd} --permission-mode {}", mode.as_arg())
+    } else {
+        engine_cmd.to_string()
     }
 }
 
-fn build_agent_shell_command(engine_cmd: &str, prompt: &str, finalizer: Option<&str>) -> String {
-    let agent = format!("{} {}", engine_cmd, shell_words::quote(prompt));
+fn build_agent_shell_command(
+    engine_cmd: &str,
+    prompt: &str,
+    rai_exe: &str,
+    finalizer: Option<&str>,
+) -> String {
+    let has_placeholder = engine_cmd.contains("{PROMPT}") || engine_cmd.contains("{RAI}");
+    let agent = if has_placeholder {
+        engine_cmd
+            .replace("{PROMPT}", &shell_words::quote(prompt))
+            .replace("{RAI}", &shell_quote(rai_exe))
+    } else {
+        format!("{} {}", engine_cmd, shell_words::quote(prompt))
+    };
+    let agent_block = format!("set -o pipefail; ({agent})");
     match finalizer {
         Some(finalizer) => format!(
-            "({agent}); __rai_agent_status=$?; if [ \"$__rai_agent_status\" -ne 0 ]; then echo \"rai: agent exited with status $__rai_agent_status; skip auto publish\" >&2; exit \"$__rai_agent_status\"; fi; {finalizer}"
+            "{agent_block}; __rai_agent_status=$?; if [ \"$__rai_agent_status\" -ne 0 ]; then echo \"rai: agent exited with status $__rai_agent_status; skip auto publish\" >&2; exit \"$__rai_agent_status\"; fi; {finalizer}"
         ),
-        None => agent,
+        None => agent_block,
     }
 }
 
@@ -878,28 +916,79 @@ mod tests {
 
     #[test]
     fn agent_shell_command_runs_finalizer_only_after_success() {
-        let cmd = build_agent_shell_command("agent --flag", "hello world", Some("rai finalize"));
+        let cmd = build_agent_shell_command(
+            "agent --flag",
+            "hello world",
+            "/opt/rai/rai",
+            Some("rai finalize"),
+        );
 
-        assert!(cmd.contains("agent --flag 'hello world'"));
+        assert!(cmd.starts_with("set -o pipefail; (agent --flag 'hello world')"));
         assert!(cmd.contains("skip auto publish"));
         assert!(cmd.ends_with("rai finalize"));
     }
 
     #[test]
-    fn build_engine_cmd_appends_permission_mode_when_set() {
-        assert_eq!(
-            build_engine_cmd("ccs_print c1", Some(PermissionMode::BypassPermissions)),
-            "ccs_print c1 --permission-mode bypassPermissions"
+    fn agent_shell_command_substitutes_placeholders() {
+        let cmd = build_agent_shell_command(
+            "ccs c1 --print -- {PROMPT} | {RAI} claude format",
+            "hello world",
+            "/opt/rai/rai",
+            None,
         );
+
         assert_eq!(
-            build_engine_cmd("ccs_print c1", Some(PermissionMode::DontAsk)),
-            "ccs_print c1 --permission-mode dontAsk"
+            cmd,
+            "set -o pipefail; (ccs c1 --print -- 'hello world' | /opt/rai/rai claude format)"
         );
     }
 
     #[test]
-    fn build_engine_cmd_passes_through_when_not_set() {
-        assert_eq!(build_engine_cmd("ccs_print c1", None), "ccs_print c1");
+    fn agent_shell_command_quotes_rai_path_with_spaces() {
+        let cmd = build_agent_shell_command(
+            "{RAI} claude format <<<{PROMPT}",
+            "p",
+            "/path with spaces/rai",
+            None,
+        );
+
+        assert!(cmd.contains("'/path with spaces/rai'"));
+    }
+
+    #[test]
+    fn build_engine_cmd_substitutes_permission_mode_placeholder() {
+        assert_eq!(
+            build_engine_cmd(
+                "ccs c1 {PERMISSION_MODE} -- {PROMPT}",
+                Some(PermissionMode::DontAsk)
+            ),
+            "ccs c1 --permission-mode dontAsk -- {PROMPT}"
+        );
+        assert_eq!(
+            build_engine_cmd("ccs c1 {PERMISSION_MODE} -- {PROMPT}", None),
+            "ccs c1  -- {PROMPT}"
+        );
+    }
+
+    #[test]
+    fn build_engine_cmd_appends_permission_mode_when_set_legacy() {
+        assert_eq!(
+            build_engine_cmd("claude", Some(PermissionMode::BypassPermissions)),
+            "claude --permission-mode bypassPermissions"
+        );
+    }
+
+    #[test]
+    fn build_engine_cmd_passes_through_when_not_set_legacy() {
+        assert_eq!(build_engine_cmd("claude", None), "claude");
+    }
+
+    #[test]
+    fn default_engine_cmd_uses_real_binaries_only() {
+        assert!(crate::develop::DEFAULT_ENGINE_CMD.starts_with("ccs c1"));
+        assert!(crate::develop::DEFAULT_ENGINE_CMD.contains("{PROMPT}"));
+        assert!(crate::develop::DEFAULT_ENGINE_CMD.contains("{RAI} claude format"));
+        assert!(!crate::develop::DEFAULT_ENGINE_CMD.contains("ccs_print"));
     }
 
     #[test]
