@@ -39,15 +39,21 @@ GitHub Issue を起点に、専用の git worktree (`gwq`) と tmux session を�
   - 複数 Issue 選択時は Issue ごとに worktree と tmux session を作成する。
   - `--no-tmux` で tmux を介さず前面実行 (デバッグ用)。
 - agent 終了後の自動公開:
-  - agent が正常終了し、worktree に未コミット変更が残っている場合は自動で commit する。
-    commit subject / PR title は conventional-commits 形式 (`chore(issue-<N>): <title>`)
-    で生成し、対象リポジトリで commitlint / husky commit-msg hook が有効でも通る形にする。
-  - agent が正常終了し、PR 化できるローカル commit がある場合は自動で push し、`gh pr create` で PR を作成する。
-  - 既に同じ branch の PR がある場合は重複作成しない。
-  - agent が異常終了した場合は自動 commit / push / PR 作成を行わない。
-  - agent が正常終了し、未コミット変更も push 対象 commit も無い (= worktree が空) 場合は `gwq remove --force <branch>` で worktree を自動的に片付ける。
-  - `--no-auto-publish` で agent 終了後の commit / push / PR 作成を無効化できる。
-  - `--pr-base BRANCH` で PR の base branch を指定できる。
+  - rai 自身は commit メッセージや PR タイトルを組み立てない。代わりに、agent が正常終了し
+    かつ worktree に未コミット変更または未 push の commit が残っている場合、同じ engine_cmd で
+    **finalize agent** を起動する。finalize agent は対象リポジトリの commit 規約 (`git log` /
+    `commitlint.config.*` / `.husky/commit-msg` / `CONTRIBUTING.md` 等) を調査した上で、規約に
+    沿った commit を作成し、`git push` と `gh pr create` を実行する責務を持つ。これは
+    「リポジトリごとに違う commit / PR の流儀」を rai 側にハードコードしないための設計。
+  - finalize agent は実装 agent と同じ engine_cmd / `--permission-mode` で起動される。
+  - agent 異常終了時は finalize agent を起動しない。
+  - 実装 agent が自分で commit / push / PR まで終わらせていてもよい。その場合 finalize agent は
+    起動されず、空の worktree クリーンアップのみが行われる。
+  - 既に同じ branch の PR がある場合は重複作成しない (finalize agent 側の責務)。
+  - 未コミット変更も push 対象 commit も無い (= worktree が空) 場合は finalize agent を起動せず、
+    `gwq remove --force <branch>` で worktree を自動的に片付ける。
+  - `--no-auto-publish` で finalize agent の起動を含む agent 終了後の処理をすべて無効化できる。
+  - `--pr-base BRANCH` で PR の base branch を指定できる (finalize agent への入力に渡る)。
 - agent 権限モード:
   - `--permission-mode MODE` で agent (`claude`) の `--permission-mode` を明示できる。
   - 受理する MODE: `acceptEdits` / `auto` / `bypassPermissions` / `default` / `dontAsk` / `plan`。
@@ -63,11 +69,11 @@ GitHub Issue を起点に、専用の git worktree (`gwq`) と tmux session を�
 - [ ] branch 名生成が現行 fish 版と一致 (slug 規則, ts 形式)。
 - [ ] gwq existing 時の attach / force-recreate / abort が動く。
 - [ ] tmux session が `gwq-run-issue-<N>-<ts>` で立ち上がり、`-c` で worktree path に cd される。
-- [ ] agent 正常終了後に未コミット変更があれば自動で commit される。commit subject は
-      `chore(issue-<N>): <title>` 形式で、conventional-commits 準拠の commitlint hook を
-      持つリポジトリでも `husky commit-msg` を通過する。
-- [ ] agent 正常終了後にローカル commit があれば push され、`gh pr create` で PR が作成される。
-      PR title も `chore(issue-<N>): <title>` 形式とする。
+- [ ] agent 正常終了後に未コミット変更または未 push commit があれば、rai が finalize agent を
+      起動する。finalize agent は対象 repo の commit 規約を自力で調査し、規約に従った commit /
+      push / `gh pr create` を実施する。rai 自身は commit メッセージ / PR タイトルをハードコード
+      しない (リポジトリごとに違う conventional-commits / scope ルール / PR テンプレートを尊重)。
+- [ ] finalize agent は実装 agent と同じ engine_cmd / `--permission-mode` で起動される。
 - [ ] 同じ branch の PR が既にある場合は PR を重複作成しない。
 - [ ] agent 異常終了時は自動 commit / push / PR 作成を行わない。
 - [ ] `--no-auto-publish` で agent 終了後の自動公開を無効化できる。
