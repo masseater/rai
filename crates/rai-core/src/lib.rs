@@ -5,6 +5,7 @@ pub mod cli;
 pub mod logging;
 pub mod panic_hook;
 pub mod proc;
+pub mod shell;
 pub mod signals;
 pub mod term;
 pub mod ts;

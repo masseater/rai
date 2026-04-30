@@ -1,8 +1,9 @@
 //! `git` コマンドを呼ぶための薄いヘルパ。
 
-use std::process::{Command, Output};
+use std::process::Output;
 
 use anyhow::{anyhow, Context, Result};
+use rai_core::shell;
 
 /// `git <args...>` を実行して stdout を返す。失敗時は stderr を含むエラー。
 pub fn run(args: &[&str]) -> Result<String> {
@@ -18,8 +19,10 @@ pub fn run(args: &[&str]) -> Result<String> {
 }
 
 pub fn capture(args: &[&str]) -> Result<Output> {
-    Command::new("git")
-        .args(args)
+    let mut argv: Vec<&str> = Vec::with_capacity(args.len() + 1);
+    argv.push("git");
+    argv.extend_from_slice(args);
+    shell::user_shell_argv(&argv)
         .output()
         .with_context(|| format!("failed to spawn `git {}`", args.join(" ")))
 }

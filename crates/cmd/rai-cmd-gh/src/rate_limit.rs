@@ -1,13 +1,12 @@
 //! `rai gh rate-limit` — `gh api rate_limit` をパースして人間/機械両用に整形する。
 
-use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
 use chrono::{DateTime, Local, TimeZone, Utc};
 use clap::{Args, ValueEnum};
-use rai_core::{cli::Run, Ctx, Result};
+use rai_core::{cli::Run, shell, Ctx, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Args)]
@@ -145,8 +144,7 @@ struct ApiResponse {
 }
 
 fn fetch() -> Result<Snapshot> {
-    let output = Command::new("gh")
-        .args(["api", "rate_limit"])
+    let output = shell::user_shell_argv(&["gh", "api", "rate_limit"])
         .output()
         .context("failed to spawn `gh`. Is GitHub CLI installed and on PATH?")?;
     if !output.status.success() {

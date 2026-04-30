@@ -3,14 +3,14 @@
 //! 仕様: `docs/specs/01-pair.md` 参照。
 
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use clap::Args;
 use rai_core::{
     cli::Run,
-    proc, signals,
+    proc, shell, signals,
     term::{install_panic_restore, StatusBar},
     ts, Ctx, Result,
 };
@@ -51,7 +51,7 @@ impl Run for Cmd {
         install_panic_restore();
 
         let signal_slot = signals::install()?;
-        let shell = self.shell.clone().unwrap_or_else(proc::default_shell);
+        let shell = self.shell.clone().unwrap_or_else(shell::user_shell_path);
         let timeout_bin = proc::find_timeout_bin();
 
         let mut bar = if self.no_status_bar {
@@ -190,23 +190,35 @@ fn log(bar: &mut Option<StatusBar>, msg: impl AsRef<str>) {
 }
 
 fn spawn_child(
-    shell: &str,
+    inner_shell: &str,
     cmd: &str,
     timeout_bin: Option<&Path>,
     max_seconds: u64,
     remaining_secs: u64,
 ) -> Result<Child> {
-    let mut command = match (timeout_bin, max_seconds) {
+    let user_shell_path = shell::user_shell_path();
+    let kind = shell::detect_shell_kind(&user_shell_path);
+    let q = shell::quote_for(kind);
+
+    // 内側: `<inner_shell> -c <cmd>` を 1 引数として組み立てる。
+    let inner = format!("{} -c {}", q(inner_shell), q(cmd));
+
+    // 外側にユーザーシェルを噛ませる。timeout がある場合は `<timeout_bin> <secs> <inner...>`
+    // を外側シェルの -c 引数として渡す。timeout バイナリ自体もユーザーシェル経由で
+    // 解決させる (alias / function でも動く)。
+    let outer_cmd = match (timeout_bin, max_seconds) {
         (Some(bin), s) if s != 0 => {
-            let mut c = Command::new(bin);
-            c.arg(remaining_secs.to_string())
-                .arg(shell)
-                .arg("-c")
-                .arg(cmd);
-            c
+            format!(
+                "{} {} {}",
+                q(&bin.display().to_string()),
+                remaining_secs,
+                inner
+            )
         }
-        _ => proc::shell_command(shell, cmd),
+        _ => inner,
     };
+
+    let mut command = shell::shell_command(&user_shell_path, &outer_cmd);
     command
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())

@@ -1,10 +1,8 @@
 //! `rai git track-mine` — 自分の open PR の head ブランチをまとめて track する。
 
-use std::process::Command;
-
 use anyhow::{anyhow, bail, Context};
 use clap::{Args, ValueEnum};
-use rai_core::{cli::Run, Ctx, Result};
+use rai_core::{cli::Run, shell, Ctx, Result};
 use serde::Deserialize;
 
 use crate::git;
@@ -90,8 +88,7 @@ impl Run for Cmd {
 
         // fetch first.
         if !self.dry_run {
-            let st = Command::new("git")
-                .args(["fetch", "--prune", &self.remote])
+            let st = shell::user_shell_argv(&["git", "fetch", "--prune", &self.remote])
                 .status()
                 .context("failed to spawn git fetch")?;
             if !st.success() {
@@ -130,8 +127,7 @@ impl Run for Cmd {
                 created.push(br);
                 continue;
             }
-            let st = Command::new("git")
-                .args(["branch", "--track", &br, &remote_ref])
+            let st = shell::user_shell_argv(&["git", "branch", "--track", &br, &remote_ref])
                 .status()
                 .context("failed to spawn git branch")?;
             if !st.success() {
@@ -171,8 +167,10 @@ impl Run for Cmd {
 }
 
 fn gh_capture(args: &[&str]) -> Result<String> {
-    let out = Command::new("gh")
-        .args(args)
+    let mut argv: Vec<&str> = Vec::with_capacity(args.len() + 1);
+    argv.push("gh");
+    argv.extend_from_slice(args);
+    let out = shell::user_shell_argv(&argv)
         .output()
         .context("failed to spawn `gh`. Is GitHub CLI installed and on PATH?")?;
     if !out.status.success() {

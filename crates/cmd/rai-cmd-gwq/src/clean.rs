@@ -4,11 +4,11 @@ use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use anyhow::{anyhow, bail, Context};
 use clap::Args;
-use rai_core::{cli::Run, Ctx, Result};
+use rai_core::{cli::Run, shell, Ctx, Result};
 
 #[derive(Debug, Args)]
 pub struct Cmd {
@@ -47,8 +47,7 @@ impl Run for Cmd {
         };
 
         // fetch --prune
-        let st = Command::new("git")
-            .args(["fetch", "--prune", "--quiet", &self.remote])
+        let st = shell::user_shell_argv(&["git", "fetch", "--prune", "--quiet", &self.remote])
             .status()
             .context("failed to spawn git fetch")?;
         if !st.success() {
@@ -162,13 +161,8 @@ struct Entry {
 }
 
 fn detect_default_branch(remote: &str) -> Result<String> {
-    let symref = Command::new("git")
-        .args([
-            "symbolic-ref",
-            "--quiet",
-            &format!("refs/remotes/{remote}/HEAD"),
-        ])
-        .output()?;
+    let head_ref = format!("refs/remotes/{remote}/HEAD");
+    let symref = shell::user_shell_argv(&["git", "symbolic-ref", "--quiet", &head_ref]).output()?;
     if symref.status.success() {
         let s = String::from_utf8_lossy(&symref.stdout).trim().to_string();
         let prefix = format!("refs/remotes/{remote}/");
@@ -177,13 +171,8 @@ fn detect_default_branch(remote: &str) -> Result<String> {
         }
     }
     for cand in ["main", "master"] {
-        let st = Command::new("git")
-            .args([
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{cand}"),
-            ])
+        let cand_ref = format!("refs/heads/{cand}");
+        let st = shell::user_shell_argv(&["git", "rev-parse", "--verify", "--quiet", &cand_ref])
             .status()?;
         if st.success() {
             return Ok(cand.to_string());
@@ -193,9 +182,8 @@ fn detect_default_branch(remote: &str) -> Result<String> {
 }
 
 fn list_merged(remote: &str, default_branch: &str) -> Result<BTreeSet<String>> {
-    let out = Command::new("git")
-        .args(["branch", "--merged", &format!("{remote}/{default_branch}")])
-        .output()?;
+    let merged_ref = format!("{remote}/{default_branch}");
+    let out = shell::user_shell_argv(&["git", "branch", "--merged", &merged_ref]).output()?;
     if !out.status.success() {
         return Ok(BTreeSet::new());
     }
@@ -211,7 +199,7 @@ fn list_merged(remote: &str, default_branch: &str) -> Result<BTreeSet<String>> {
 }
 
 fn list_gone() -> Result<BTreeSet<String>> {
-    let out = Command::new("git").args(["branch", "-vv"]).output()?;
+    let out = shell::user_shell_argv(&["git", "branch", "-vv"]).output()?;
     let mut set = BTreeSet::new();
     if !out.status.success() {
         return Ok(set);
@@ -229,13 +217,13 @@ fn list_gone() -> Result<BTreeSet<String>> {
 }
 
 fn list_last_commits() -> Result<HashMap<String, String>> {
-    let out = Command::new("git")
-        .args([
-            "for-each-ref",
-            "--format=%(refname:short)\t%(committerdate:short) %(subject)",
-            "refs/heads",
-        ])
-        .output()?;
+    let out = shell::user_shell_argv(&[
+        "git",
+        "for-each-ref",
+        "--format=%(refname:short)\t%(committerdate:short) %(subject)",
+        "refs/heads",
+    ])
+    .output()?;
     let mut map = HashMap::new();
     if !out.status.success() {
         return Ok(map);
@@ -254,9 +242,7 @@ fn list_worktrees(
     gone: &BTreeSet<String>,
     last_commits: &HashMap<String, String>,
 ) -> Result<Vec<Entry>> {
-    let out = Command::new("git")
-        .args(["worktree", "list", "--porcelain"])
-        .output()?;
+    let out = shell::user_shell_argv(&["git", "worktree", "list", "--porcelain"]).output()?;
     if !out.status.success() {
         bail!("git worktree list --porcelain failed");
     }
@@ -345,9 +331,8 @@ fn flush_entry(
 }
 
 fn is_dirty(path: &Path) -> bool {
-    let out = Command::new("git")
-        .args(["-C", &path.display().to_string(), "status", "--porcelain"])
-        .output();
+    let path_str = path.display().to_string();
+    let out = shell::user_shell_argv(&["git", "-C", &path_str, "status", "--porcelain"]).output();
     match out {
         Ok(o) => !o.stdout.is_empty(),
         Err(_) => false,
@@ -355,20 +340,20 @@ fn is_dirty(path: &Path) -> bool {
 }
 
 fn select_with_fzf(entries: &[Entry], preselect: &[usize]) -> Result<Vec<usize>> {
-    let mut fzf = Command::new("fzf")
-        .args([
-            "--multi",
-            "--reverse",
-            "--no-sort",
-            "--ansi",
-            "--with-nth=2..",
-            "--delimiter=\t",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .context("failed to spawn `fzf`")?;
+    let mut fzf = shell::user_shell_argv(&[
+        "fzf",
+        "--multi",
+        "--reverse",
+        "--no-sort",
+        "--ansi",
+        "--with-nth=2..",
+        "--delimiter=\t",
+    ])
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::inherit())
+    .spawn()
+    .context("failed to spawn `fzf`")?;
     {
         let mut stdin = fzf.stdin.take().ok_or_else(|| anyhow!("fzf stdin"))?;
         let preset: BTreeSet<usize> = preselect.iter().copied().collect();
@@ -404,24 +389,20 @@ fn select_with_fzf(entries: &[Entry], preselect: &[usize]) -> Result<Vec<usize>>
 }
 
 fn remove_one(e: &Entry) -> Result<()> {
-    let st = Command::new("gwq")
-        .args(["remove", "-f", "-b", &e.branch])
-        .status();
+    let st = shell::user_shell_argv(&["gwq", "remove", "-f", "-b", &e.branch]).status();
     let gwq_ok = matches!(st, Ok(s) if s.success());
     if !gwq_ok && e.path.exists() {
         // fallback: rm -rf + git worktree prune
         if let Err(err) = fs::remove_dir_all(&e.path) {
             eprintln!("warn: rm -rf {}: {err}", e.path.display());
         }
-        Command::new("git")
-            .args(["worktree", "prune"])
+        shell::user_shell_argv(&["git", "worktree", "prune"])
             .status()
             .ok();
     }
     if branch_exists(&e.branch) {
         // squash-merged etc.: try git branch -D
-        Command::new("git")
-            .args(["branch", "-D", &e.branch])
+        shell::user_shell_argv(&["git", "branch", "-D", &e.branch])
             .status()
             .ok();
     }
@@ -429,13 +410,8 @@ fn remove_one(e: &Entry) -> Result<()> {
 }
 
 fn branch_exists(branch: &str) -> bool {
-    let st = Command::new("git")
-        .args([
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("refs/heads/{branch}"),
-        ])
-        .status();
+    let head_ref = format!("refs/heads/{branch}");
+    let st =
+        shell::user_shell_argv(&["git", "rev-parse", "--verify", "--quiet", &head_ref]).status();
     matches!(st, Ok(s) if s.success())
 }

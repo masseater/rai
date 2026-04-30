@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context};
 use clap::Args;
-use rai_core::{cli::Run, signals, ts, Ctx, Result};
+use rai_core::{cli::Run, shell, signals, ts, Ctx, Result};
 use serde::Deserialize;
 
 use crate::queue::{self, Entry, Paths};
@@ -171,8 +171,10 @@ fn fetch_pr_list(author: &str, all: bool) -> Result<Vec<PrInfo>> {
         args.push("--author");
         args.push(author);
     }
-    let out = Command::new("gh")
-        .args(&args)
+    let mut argv: Vec<&str> = Vec::with_capacity(args.len() + 1);
+    argv.push("gh");
+    argv.extend(args.iter().copied());
+    let out = shell::user_shell_argv(&argv)
         .output()
         .context("failed to spawn `gh pr list`")?;
     if !out.status.success() {
@@ -187,16 +189,17 @@ fn fetch_pr_list(author: &str, all: bool) -> Result<Vec<PrInfo>> {
 }
 
 fn fetch_pr_one(pr: u64) -> Result<PrInfo> {
-    let out = Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &pr.to_string(),
-            "--json",
-            "number,title,url,mergeable,headRefName,headRefOid,baseRefName",
-        ])
-        .output()
-        .context("failed to spawn `gh pr view`")?;
+    let pr_str = pr.to_string();
+    let out = shell::user_shell_argv(&[
+        "gh",
+        "pr",
+        "view",
+        &pr_str,
+        "--json",
+        "number,title,url,mergeable,headRefName,headRefOid,baseRefName",
+    ])
+    .output()
+    .context("failed to spawn `gh pr view`")?;
     if !out.status.success() {
         bail!(
             "gh pr view {pr} failed: {}",
@@ -426,8 +429,9 @@ fn process_one(paths: &Paths, agent_argv: &[String], pr: u64, entry: &Entry) -> 
         );
         let mut argv = agent_argv.to_vec();
         argv.push(prompt);
-        let mut c = Command::new(&argv[0]);
-        c.args(&argv[1..]).current_dir(&wt);
+        let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let mut c = shell::user_shell_argv(&argv_refs);
+        c.current_dir(&wt);
         attach_log(&mut c, &log_path);
         let st = c.status();
         match st {
@@ -523,7 +527,10 @@ fn finalize(paths: &Paths, qmx: &Mutex<()>, pr: u64, outcome: WorkerOutcome) {
 
 fn run_git(log: &dyn Fn(&str), args: &[&str]) -> Result<()> {
     log(&format!("git {}", args.join(" ")));
-    let st = Command::new("git").args(args).status()?;
+    let mut argv: Vec<&str> = Vec::with_capacity(args.len() + 1);
+    argv.push("git");
+    argv.extend_from_slice(args);
+    let st = shell::user_shell_argv(&argv).status()?;
     if !st.success() {
         bail!("git {} -> {:?}", args.join(" "), st.code());
     }
@@ -536,7 +543,10 @@ fn run_in(log: &dyn Fn(&str), cwd: &Path, bin: &str, args: &[&str]) -> Result<()
         cwd = cwd.display(),
         a = args.join(" ")
     ));
-    let st = Command::new(bin).args(args).current_dir(cwd).status()?;
+    let mut argv: Vec<&str> = Vec::with_capacity(args.len() + 1);
+    argv.push(bin);
+    argv.extend_from_slice(args);
+    let st = shell::user_shell_argv(&argv).current_dir(cwd).status()?;
     if !st.success() {
         bail!("{bin} {} -> {:?}", args.join(" "), st.code());
     }
@@ -563,37 +573,38 @@ fn attach_log(cmd: &mut Command, log_path: &std::path::Path) {
 }
 
 fn has_unresolved_markers(wt: &Path) -> bool {
-    let out = Command::new("git")
-        .args([
-            "-C",
-            &wt.display().to_string(),
-            "diff",
-            "--name-only",
-            "--diff-filter=U",
-        ])
-        .output();
+    let wt_str = wt.display().to_string();
+    let out = shell::user_shell_argv(&[
+        "git",
+        "-C",
+        &wt_str,
+        "diff",
+        "--name-only",
+        "--diff-filter=U",
+    ])
+    .output();
     matches!(out, Ok(o) if !o.stdout.is_empty())
 }
 
 fn is_dirty(wt: &Path) -> bool {
-    let out = Command::new("git")
-        .args(["-C", &wt.display().to_string(), "status", "--porcelain"])
-        .output();
+    let wt_str = wt.display().to_string();
+    let out = shell::user_shell_argv(&["git", "-C", &wt_str, "status", "--porcelain"]).output();
     matches!(out, Ok(o) if !o.stdout.is_empty())
 }
 
 fn should_push(wt: &Path, base: &str) -> bool {
     let _ = base; // base is informational here; ahead vs upstream check is enough.
-    let out = Command::new("git")
-        .args([
-            "-C",
-            &wt.display().to_string(),
-            "rev-list",
-            "--left-right",
-            "--count",
-            "@{u}...HEAD",
-        ])
-        .output();
+    let wt_str = wt.display().to_string();
+    let out = shell::user_shell_argv(&[
+        "git",
+        "-C",
+        &wt_str,
+        "rev-list",
+        "--left-right",
+        "--count",
+        "@{u}...HEAD",
+    ])
+    .output();
     let Ok(o) = out else { return false };
     if !o.status.success() {
         return false;

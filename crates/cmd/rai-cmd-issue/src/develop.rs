@@ -3,14 +3,18 @@
 use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
 use chrono::Local;
 use clap::{Args, ValueEnum};
-use rai_core::{cli::Run, Ctx, Result};
+use rai_core::{
+    cli::Run,
+    shell::{self, Shell},
+    Ctx, Result,
+};
 use serde::Deserialize;
 
 const DEFAULT_ENGINE_CMD: &str = "ccs c1 --print --output-format stream-json --verbose {PERMISSION_MODE} -- {PROMPT} | {RAI} claude format";
@@ -199,23 +203,25 @@ fn run_one(cmd: &Cmd, issue: &Issue) -> Result<()> {
         &issue.title,
         !cmd.no_auto_publish,
     )?;
+    let (shell_path, shell_kind) = shell::detect_user_shell();
     let finalizer = if cmd.no_auto_publish {
         None
     } else {
-        Some(build_finalize_command(cmd, issue, &branch)?)
+        Some(build_finalize_command(cmd, issue, &branch, shell_kind)?)
     };
     let exe = std::env::current_exe().context("failed to resolve current executable")?;
     let rai_exe = exe.display().to_string();
-    let shell_path = user_shell_path();
-    let shell = detect_shell_kind(&shell_path);
     let engine_cmd = build_engine_cmd(&cmd.engine_cmd, cmd.permission_mode);
-    let full_cmd =
-        build_agent_shell_command(&engine_cmd, &prompt, &rai_exe, finalizer.as_deref(), shell);
+    let full_cmd = build_agent_shell_command(
+        &engine_cmd,
+        &prompt,
+        &rai_exe,
+        finalizer.as_deref(),
+        shell_kind,
+    );
 
     if cmd.no_tmux {
-        let status = Command::new(&shell_path)
-            .arg("-c")
-            .arg(&full_cmd)
+        let status = shell::shell_command(&shell_path, &full_cmd)
             .current_dir(&wt.path)
             .status()
             .with_context(|| format!("failed to spawn `{shell_path} -c`"))?;
@@ -228,19 +234,19 @@ fn run_one(cmd: &Cmd, issue: &Issue) -> Result<()> {
     let ts = Local::now().format("%Y%m%d-%H%M%S");
     let session = format!("gwq-run-issue-{}-{ts}", issue.number);
     let log_path = engine_log_path(&session)?;
-    let wrapped_cmd = wrap_with_log(&full_cmd, &log_path, shell);
+    let wrapped_cmd = wrap_with_log(&full_cmd, &log_path, shell_kind);
 
-    let spawn = Command::new("tmux")
-        .args([
-            "new-session",
-            "-d",
-            "-s",
-            &session,
-            "-c",
-            &wt.path.display().to_string(),
-            &wrapped_cmd,
-        ])
-        .status();
+    let spawn = shell::user_shell_argv(&[
+        "tmux",
+        "new-session",
+        "-d",
+        "-s",
+        &session,
+        "-c",
+        &wt.path.display().to_string(),
+        &wrapped_cmd,
+    ])
+    .status();
     if let Err(e) = spawn {
         if wt.created {
             rollback_worktree(&branch);
@@ -286,8 +292,7 @@ fn run_one(cmd: &Cmd, issue: &Issue) -> Result<()> {
 
 fn rollback_worktree(branch: &str) {
     eprintln!("tmux start failed; rolling back worktree");
-    Command::new("gwq")
-        .args(["remove", "--force", branch])
+    shell::user_shell_argv(&["gwq", "remove", "--force", branch])
         .status()
         .ok();
 }
@@ -299,54 +304,16 @@ fn engine_log_path(session: &str) -> Result<PathBuf> {
     Ok(dir.join(format!("{session}.log")))
 }
 
-fn wrap_with_log(inner: &str, log_path: &Path, shell: Shell) -> String {
-    let log = shell_quote(&log_path.display().to_string());
-    match shell {
+fn wrap_with_log(inner: &str, log_path: &Path, shell_kind: Shell) -> String {
+    let log = shell::quote_path(shell_kind, log_path);
+    match shell_kind {
         Shell::Posix => format!("({inner}) 2>&1 | tee -a {log}"),
         Shell::Fish => format!("begin; {inner}; end 2>&1 | tee -a {log}"),
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Shell {
-    Posix,
-    Fish,
-}
-
-fn user_shell_path() -> String {
-    std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
-}
-
-fn detect_shell_kind(path: &str) -> Shell {
-    let base = std::path::Path::new(path)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
-    if base == "fish" {
-        Shell::Fish
-    } else {
-        Shell::Posix
-    }
-}
-
-fn shell_quote_fish(s: &str) -> String {
-    // fish 's single-quoted strings only escape backslash and single-quote.
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('\'');
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\'' => out.push_str("\\'"),
-            _ => out.push(c),
-        }
-    }
-    out.push('\'');
-    out
-}
-
 fn tmux_has_session(session: &str) -> bool {
-    Command::new("tmux")
-        .args(["has-session", "-t", session])
+    shell::user_shell_argv(&["tmux", "has-session", "-t", session])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -490,8 +457,7 @@ fn pick_issues_with_fzf(owner: &str, repo: &str) -> Result<Vec<(u64, String)>> {
     if items.is_empty() {
         bail!("no open issues found");
     }
-    let mut fzf = Command::new("fzf")
-        .arg("--multi")
+    let mut fzf = shell::user_shell_argv(&["fzf", "--multi"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -574,12 +540,10 @@ fn ensure_worktree(branch: &str) -> Result<Worktree> {
                 created: false,
             }),
             ExistingAction::ForceRecreate => {
-                Command::new("gwq")
-                    .args(["tmux", "kill", branch])
+                shell::user_shell_argv(&["gwq", "tmux", "kill", branch])
                     .status()
                     .ok();
-                let st = Command::new("gwq")
-                    .args(["remove", "--force", branch])
+                let st = shell::user_shell_argv(&["gwq", "remove", "--force", branch])
                     .status()
                     .context("failed to spawn gwq remove")?;
                 if !st.success() {
@@ -601,7 +565,7 @@ fn ensure_worktree(branch: &str) -> Result<Worktree> {
 }
 
 fn gwq_get(branch: &str) -> Result<PathBuf> {
-    let out = Command::new("gwq").args(["get", branch]).output()?;
+    let out = shell::user_shell_argv(&["gwq", "get", branch]).output()?;
     if !out.status.success() {
         bail!("gwq get {branch} not found");
     }
@@ -610,8 +574,7 @@ fn gwq_get(branch: &str) -> Result<PathBuf> {
 }
 
 fn gwq_add(branch: &str) -> Result<PathBuf> {
-    let st = Command::new("gwq")
-        .args(["add", "-b", branch])
+    let st = shell::user_shell_argv(&["gwq", "add", "-b", branch])
         .status()
         .context("failed to spawn gwq add")?;
     if !st.success() {
@@ -687,12 +650,9 @@ fn build_agent_shell_command(
     prompt: &str,
     rai_exe: &str,
     finalizer: Option<&str>,
-    shell: Shell,
+    shell_kind: Shell,
 ) -> String {
-    let quote = match shell {
-        Shell::Posix => |s: &str| shell_quote(s),
-        Shell::Fish => shell_quote_fish,
-    };
+    let quote = shell::quote_for(shell_kind);
     let has_placeholder = engine_cmd.contains("{PROMPT}") || engine_cmd.contains("{RAI}");
     let agent = if has_placeholder {
         engine_cmd
@@ -701,7 +661,7 @@ fn build_agent_shell_command(
     } else {
         format!("{} {}", engine_cmd, quote(prompt))
     };
-    match shell {
+    match shell_kind {
         Shell::Posix => build_posix_agent_block(&agent, finalizer),
         Shell::Fish => build_fish_agent_block(&agent, finalizer),
     }
@@ -729,24 +689,30 @@ fn build_fish_agent_block(agent: &str, finalizer: Option<&str>) -> String {
     }
 }
 
-fn build_finalize_command(cmd: &Cmd, issue: &Issue, branch: &str) -> Result<String> {
+fn build_finalize_command(
+    cmd: &Cmd,
+    issue: &Issue,
+    branch: &str,
+    shell_kind: Shell,
+) -> Result<String> {
     let exe = std::env::current_exe().context("failed to resolve current executable")?;
+    let q = shell::quote_for(shell_kind);
     let mut parts = vec![
-        shell_quote_path(&exe),
+        shell::quote_path(shell_kind, &exe),
         "issue".to_string(),
         "finalize-agent".to_string(),
         "--issue-url".to_string(),
-        shell_quote(&issue.url),
+        q(&issue.url),
         "--issue-number".to_string(),
         issue.number.to_string(),
         "--issue-title".to_string(),
-        shell_quote(&issue.title),
+        q(&issue.title),
         "--repo".to_string(),
-        shell_quote(&format!("{}/{}", issue.owner, issue.repo)),
+        q(&format!("{}/{}", issue.owner, issue.repo)),
         "--branch".to_string(),
-        shell_quote(branch),
+        q(branch),
         "--engine-cmd".to_string(),
-        shell_quote(&cmd.engine_cmd),
+        q(&cmd.engine_cmd),
     ];
     if let Some(mode) = cmd.permission_mode {
         parts.push("--permission-mode".to_string());
@@ -755,17 +721,9 @@ fn build_finalize_command(cmd: &Cmd, issue: &Issue, branch: &str) -> Result<Stri
     let pr_base = cmd.pr_base.clone().or_else(local_origin_head_branch);
     if let Some(base) = pr_base.as_deref() {
         parts.push("--pr-base".to_string());
-        parts.push(shell_quote(base));
+        parts.push(q(base));
     }
     Ok(parts.join(" "))
-}
-
-fn shell_quote(s: &str) -> String {
-    shell_words::quote(s).into_owned()
-}
-
-fn shell_quote_path(path: &Path) -> String {
-    shell_quote(&path.display().to_string())
 }
 
 #[derive(Debug)]
@@ -800,14 +758,11 @@ fn finalize_after_agent(ctx: &PublishContext) -> Result<()> {
     let prompt = build_finalize_prompt(ctx, has_local, has_commits);
     let exe = std::env::current_exe().context("failed to resolve current executable")?;
     let rai_exe = exe.display().to_string();
-    let shell_path = user_shell_path();
-    let shell = detect_shell_kind(&shell_path);
+    let (shell_path, shell_kind) = shell::detect_user_shell();
     let engine_cmd = build_engine_cmd(&ctx.engine_cmd, ctx.permission_mode);
-    let full_cmd = build_agent_shell_command(&engine_cmd, &prompt, &rai_exe, None, shell);
+    let full_cmd = build_agent_shell_command(&engine_cmd, &prompt, &rai_exe, None, shell_kind);
 
-    let status = Command::new(&shell_path)
-        .arg("-c")
-        .arg(&full_cmd)
+    let status = shell::shell_command(&shell_path, &full_cmd)
         .status()
         .with_context(|| format!("failed to spawn finalize agent via `{shell_path} -c`"))?;
     if !status.success() {
@@ -909,8 +864,10 @@ fn existing_pr_url(branch: &str) -> Result<Option<String>> {
 }
 
 fn git_capture(args: &[&str]) -> Result<String> {
-    let out = Command::new("git")
-        .args(args)
+    let mut argv: Vec<&str> = Vec::with_capacity(args.len() + 1);
+    argv.push("git");
+    argv.extend_from_slice(args);
+    let out = shell::user_shell_argv(&argv)
         .output()
         .with_context(|| format!("failed to spawn `git {}`", args.join(" ")))?;
     if !out.status.success() {
@@ -926,15 +883,13 @@ fn git_capture(args: &[&str]) -> Result<String> {
 
 fn cleanup_empty_worktree(branch: &str) {
     let safe_cwd = std::env::temp_dir();
-    let kill = Command::new("gwq")
-        .args(["tmux", "kill", branch])
+    let kill = shell::user_shell_argv(&["gwq", "tmux", "kill", branch])
         .current_dir(&safe_cwd)
         .status();
     if let Err(e) = kill {
         eprintln!("rai: gwq tmux kill failed to spawn: {e}");
     }
-    let rm = Command::new("gwq")
-        .args(["remove", "--force", branch])
+    let rm = shell::user_shell_argv(&["gwq", "remove", "--force", branch])
         .current_dir(&safe_cwd)
         .status();
     match rm {
@@ -948,15 +903,15 @@ fn cleanup_empty_worktree(branch: &str) {
 }
 
 fn local_origin_head_branch() -> Option<String> {
-    let out = Command::new("git")
-        .args([
-            "symbolic-ref",
-            "--quiet",
-            "--short",
-            "refs/remotes/origin/HEAD",
-        ])
-        .output()
-        .ok()?;
+    let out = shell::user_shell_argv(&[
+        "git",
+        "symbolic-ref",
+        "--quiet",
+        "--short",
+        "refs/remotes/origin/HEAD",
+    ])
+    .output()
+    .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -966,8 +921,10 @@ fn local_origin_head_branch() -> Option<String> {
 }
 
 fn gh_capture(args: &[&str]) -> Result<String> {
-    let out = Command::new("gh")
-        .args(args)
+    let mut argv: Vec<&str> = Vec::with_capacity(args.len() + 1);
+    argv.push("gh");
+    argv.extend_from_slice(args);
+    let out = shell::user_shell_argv(&argv)
         .output()
         .context("failed to spawn `gh`")?;
     if !out.status.success() {
@@ -985,10 +942,12 @@ fn gh_capture(args: &[&str]) -> Result<String> {
 mod tests {
     use std::path::Path;
 
+    use rai_core::shell::{detect_shell_kind, quote_fish, Shell};
+
     use super::{
         build_agent_shell_command, build_engine_cmd, build_finalize_prompt, build_prompt,
-        default_branch, detect_shell_kind, parse_selected_issues, read_log_tail, shell_quote_fish,
-        slugify, wrap_with_log, PermissionMode, PublishContext, Shell,
+        default_branch, parse_selected_issues, read_log_tail, slugify, wrap_with_log,
+        PermissionMode, PublishContext,
     };
 
     #[test]
@@ -1156,10 +1115,10 @@ mod tests {
 
     #[test]
     fn shell_quote_fish_escapes_quotes_and_backslashes() {
-        assert_eq!(shell_quote_fish("plain"), "'plain'");
-        assert_eq!(shell_quote_fish("a'b"), "'a\\'b'");
-        assert_eq!(shell_quote_fish("a\\b"), "'a\\\\b'");
-        assert_eq!(shell_quote_fish("space here"), "'space here'");
+        assert_eq!(quote_fish("plain"), "'plain'");
+        assert_eq!(quote_fish("a'b"), "'a\\'b'");
+        assert_eq!(quote_fish("a\\b"), "'a\\\\b'");
+        assert_eq!(quote_fish("space here"), "'space here'");
     }
 
     #[test]

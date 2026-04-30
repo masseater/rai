@@ -1,14 +1,13 @@
 //! `rai pr wait` — GitHub PR の check-runs を polling し、完了で通知する。
 
 use std::io::{self, IsTerminal, Write};
-use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
 use clap::Args;
-use rai_core::{cli::Run, proc, signals, Ctx, Result};
+use rai_core::{cli::Run, proc, shell, signals, Ctx, Result};
 use serde::Deserialize;
 
 #[derive(Debug, Args)]
@@ -340,8 +339,10 @@ fn fetch_check_runs(pr: &Pr) -> Result<Summary> {
 }
 
 fn gh_capture(args: &[&str]) -> Result<String> {
-    let out = Command::new("gh")
-        .args(args)
+    let mut argv: Vec<&str> = Vec::with_capacity(args.len() + 1);
+    argv.push("gh");
+    argv.extend_from_slice(args);
+    let out = shell::user_shell_argv(&argv)
         .output()
         .context("failed to spawn `gh`")?;
     if !out.status.success() {
@@ -362,13 +363,19 @@ fn send_notify(outcome: Outcome, pr: &Pr, url: &str, s: &Summary) -> Result<()> 
         s.success, s.failure, s.skipped
     );
     if proc::find_in_path("terminal-notifier").is_some() {
-        Command::new("terminal-notifier")
-            .args(["-title", &title, "-message", &msg, "-open", url])
-            .status()
-            .ok();
+        shell::user_shell_argv(&[
+            "terminal-notifier",
+            "-title",
+            &title,
+            "-message",
+            &msg,
+            "-open",
+            url,
+        ])
+        .status()
+        .ok();
     } else if proc::find_in_path("notify-send").is_some() {
-        Command::new("notify-send")
-            .args([&title, &msg])
+        shell::user_shell_argv(&["notify-send", &title, &msg])
             .status()
             .ok();
     }

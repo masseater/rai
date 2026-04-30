@@ -7,11 +7,9 @@ pub mod develop;
 pub mod inventory;
 pub mod triage;
 
-use std::process::Command;
-
 use anyhow::{bail, Context};
 use clap::{Args, Subcommand};
-use rai_core::{cli::Run, Ctx, Result};
+use rai_core::{cli::Run, shell, Ctx, Result};
 use serde::Deserialize;
 
 #[derive(Debug, Args)]
@@ -74,10 +72,12 @@ pub(crate) fn validate_repo(repo: &str) -> Result<()> {
 }
 
 pub(crate) fn gh_capture(args: &[&str]) -> Result<String> {
-    let out = Command::new("gh")
-        .args(args)
+    let mut argv: Vec<&str> = Vec::with_capacity(args.len() + 1);
+    argv.push("gh");
+    argv.extend_from_slice(args);
+    let out = shell::user_shell_argv(&argv)
         .output()
-        .context("failed to spawn `gh`")?;
+        .context("failed to spawn `gh` via user shell")?;
     if !out.status.success() {
         bail!(
             "`gh {}` failed (status {:?}): {}",

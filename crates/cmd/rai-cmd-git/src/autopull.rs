@@ -1,13 +1,12 @@
 //! `rai git autopull` — upstream を間欠 fetch + fast-forward pull。
 
-use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{bail, Context};
 use clap::Args;
-use rai_core::{cli::Run, signals, ts, Ctx, Result};
+use rai_core::{cli::Run, shell, signals, ts, Ctx, Result};
 
 use crate::git;
 
@@ -103,8 +102,7 @@ fn run_cycle(
     remote_branch: &str,
     upstream: &str,
 ) -> Result<()> {
-    let fetch = Command::new("git")
-        .args(["fetch", "--quiet", remote, remote_branch])
+    let fetch = shell::user_shell_argv(&["git", "fetch", "--quiet", remote, remote_branch])
         .status()
         .context("failed to spawn git fetch")?;
     if !fetch.success() {
@@ -128,8 +126,7 @@ fn run_cycle(
         return Ok(());
     }
 
-    let pull = Command::new("git")
-        .args(["pull", "--ff-only", remote, remote_branch])
+    let pull = shell::user_shell_argv(&["git", "pull", "--ff-only", remote, remote_branch])
         .status()
         .context("failed to spawn git pull")?;
     if !pull.success() {
@@ -143,9 +140,7 @@ fn run_cycle(
     ));
 
     if let Some(hook) = &cmd.on_update {
-        let status = Command::new("sh")
-            .arg("-c")
-            .arg(hook)
+        let status = shell::user_shell_command(hook)
             .status()
             .context("failed to spawn --on-update command")?;
         if !status.success() {

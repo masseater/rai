@@ -1,26 +1,15 @@
 //! 子プロセス起動ヘルパ。
 //!
-//! - shell -c "<cmd>" を組み立てる薄いラッパ
 //! - PATH 上のバイナリを探すユーティリティ (`gtimeout` / `timeout` 検出に使う)
 //! - `ExitStatus` を「シェルでの $? 慣習」に揃えた整数に変換するヘルパ
+//!
+//! シェル経由でコマンドを起動する API は `crate::shell` を参照。
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::ExitStatus;
 
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
-
-/// 環境変数 `SHELL` → `/bin/sh` の順で実行用シェルを決定する。
-pub fn default_shell() -> String {
-    std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
-}
-
-/// `shell -c "cmd"` の `Command` を作る。stdout/stderr は呼び出し側で設定する想定。
-pub fn shell_command(shell: &str, cmd: &str) -> Command {
-    let mut c = Command::new(shell);
-    c.arg("-c").arg(cmd);
-    c
-}
 
 /// PATH 上で最初に見つかった実行可能ファイルのパスを返す。
 pub fn find_in_path(name: &str) -> Option<PathBuf> {

@@ -5,11 +5,11 @@
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use anyhow::{anyhow, Context};
 use clap::Args;
-use rai_core::{cli::Run, proc, Ctx, Result};
+use rai_core::{cli::Run, proc, shell, Ctx, Result};
 
 #[derive(Debug, Args)]
 pub struct Cmd {
@@ -53,15 +53,16 @@ impl Run for Cmd {
             .map(|(label, path)| format!("{label}\t{}", path.display()))
             .collect();
 
-        let mut fzf = Command::new("fzf");
-        fzf.arg("--with-nth=1").arg("--delimiter=\t");
+        let mut argv: Vec<&str> = vec!["fzf", "--with-nth=1", "--delimiter=\t"];
         if let Some(q) = &self.filter {
-            fzf.arg("--query").arg(q);
+            argv.push("--query");
+            argv.push(q);
         }
         if !self.all {
             // current behavior: just show all; --all is forwarded as a no-op for parity.
         }
 
+        let mut fzf = shell::user_shell_argv(&argv);
         let mut child = fzf
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -95,7 +96,7 @@ fn collect_ghq() -> Result<Vec<PathBuf>> {
     if proc::find_in_path("ghq").is_none() {
         return Ok(Vec::new());
     }
-    let out = Command::new("ghq").args(["list", "--full-path"]).output()?;
+    let out = shell::user_shell_argv(&["ghq", "list", "--full-path"]).output()?;
     if !out.status.success() {
         return Ok(Vec::new());
     }
@@ -106,7 +107,7 @@ fn collect_gwq() -> Result<Vec<PathBuf>> {
     if proc::find_in_path("gwq").is_none() {
         return Ok(Vec::new());
     }
-    let out = Command::new("gwq").args(["list", "--full-path"]).output()?;
+    let out = shell::user_shell_argv(&["gwq", "list", "--full-path"]).output()?;
     if !out.status.success() {
         return Ok(Vec::new());
     }
@@ -122,7 +123,7 @@ fn parse_lines(bytes: &[u8]) -> Vec<PathBuf> {
 }
 
 fn ghq_root() -> Result<PathBuf> {
-    let out = Command::new("ghq").arg("root").output()?;
+    let out = shell::user_shell_argv(&["ghq", "root"]).output()?;
     if !out.status.success() {
         return Err(anyhow!("`ghq root` failed"));
     }

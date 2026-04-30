@@ -3,11 +3,10 @@
 //! 巡回完了後にまとめて適用する。
 
 use std::io::{self, BufRead, Write};
-use std::process::Command;
 
 use anyhow::{bail, Context};
 use clap::{Args, ValueEnum};
-use rai_core::{cli::Run, Ctx, Result};
+use rai_core::{cli::Run, shell, Ctx, Result};
 use serde::Deserialize;
 
 use crate::{gh_capture, resolve_repo};
@@ -298,8 +297,10 @@ fn close_one(repo: &str, number: u64, reason: CloseReason, comment: Option<&str>
         args.push("--comment".into());
         args.push(c.to_string());
     }
-    let status = Command::new("gh")
-        .args(&args)
+    let argv: Vec<&str> = std::iter::once("gh")
+        .chain(args.iter().map(String::as_str))
+        .collect();
+    let status = shell::user_shell_argv(&argv)
         .status()
         .context("failed to spawn `gh issue close`")?;
     if !status.success() {
@@ -313,18 +314,19 @@ fn close_one(repo: &str, number: u64, reason: CloseReason, comment: Option<&str>
 }
 
 fn remove_label(repo: &str, number: u64, label: &str) -> Result<()> {
-    let status = Command::new("gh")
-        .args([
-            "issue",
-            "edit",
-            &number.to_string(),
-            "--repo",
-            repo,
-            "--remove-label",
-            label,
-        ])
-        .status()
-        .context("failed to spawn `gh issue edit`")?;
+    let number_str = number.to_string();
+    let status = shell::user_shell_argv(&[
+        "gh",
+        "issue",
+        "edit",
+        &number_str,
+        "--repo",
+        repo,
+        "--remove-label",
+        label,
+    ])
+    .status()
+    .context("failed to spawn `gh issue edit`")?;
     if !status.success() {
         bail!(
             "`gh issue edit {number} --remove-label {label}` failed (status {:?})",

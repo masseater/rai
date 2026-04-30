@@ -2,11 +2,10 @@
 //! installed and reachable on `PATH`.
 
 use std::path::PathBuf;
-use std::process::Command;
 
 use anyhow::bail;
 use clap::Args;
-use rai_core::{cli::Run, Ctx, Result};
+use rai_core::{cli::Run, shell, Ctx, Result};
 
 /// Tools that `rai` shells out to. Adding a new external dependency anywhere in
 /// the workspace? Add it here too so `rai doctor` can verify it.
@@ -116,8 +115,7 @@ fn probe_tool(tool: Tool) -> ToolStatus {
             found: None,
         };
     }
-    let version = Command::new(tool.name)
-        .arg(tool.version_arg)
+    let version = shell::user_shell_argv(&[tool.name, tool.version_arg])
         .output()
         .ok()
         .and_then(|out| {

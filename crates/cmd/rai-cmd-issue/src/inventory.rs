@@ -4,11 +4,11 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use anyhow::{bail, Context};
 use clap::Args;
-use rai_core::{cli::Run, Ctx, Result};
+use rai_core::{cli::Run, shell, Ctx, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -251,25 +251,30 @@ verdict JSON の schema:
 }
 
 fn run_engine_capture(engine_cmd: &str, prompt: &str, prompt_stdin: bool) -> Result<String> {
-    let mut argv = shell_words::split(engine_cmd).context("failed to split --engine-cmd")?;
-    if argv.is_empty() {
+    if engine_cmd.trim().is_empty() {
         bail!("--engine-cmd is empty");
     }
 
-    let program = argv.remove(0);
-    let mut command = Command::new(&program);
-    command.stdout(Stdio::piped());
+    let (shell_path, kind) = shell::detect_user_shell();
+    let q = shell::quote_for(kind);
 
-    if prompt_stdin {
-        command.args(&argv).stdin(Stdio::piped());
+    // ユーザー指定の engine_cmd は **シェル文字列** としてそのまま $SHELL -c に渡す。
+    // これにより fish の function や zsh の alias、パイプ・リダイレクトもそのまま動く。
+    let cmd_str = if prompt_stdin {
+        engine_cmd.to_string()
     } else {
-        argv.push(prompt.to_string());
-        command.args(&argv);
+        format!("{} {}", engine_cmd, q(prompt))
+    };
+
+    let mut command = shell::shell_command(&shell_path, &cmd_str);
+    command.stdout(Stdio::piped());
+    if prompt_stdin {
+        command.stdin(Stdio::piped());
     }
 
     let mut child = command
         .spawn()
-        .with_context(|| format!("failed to spawn engine command `{program}`"))?;
+        .with_context(|| format!("failed to spawn engine command via `{shell_path} -c`"))?;
 
     if prompt_stdin {
         let mut stdin = child.stdin.take().context("failed to open engine stdin")?;
@@ -368,8 +373,7 @@ fn ensure_labels_exist(repo: &str, verdicts: &[Verdict]) -> Result<()> {
         eprintln!("creating label `{label}` on {repo}");
         // `gh label create` exits non-zero if the label already exists; we've
         // pre-filtered, so any non-zero here is a real error.
-        let status = Command::new("gh")
-            .args(["label", "create", label, "--repo", repo])
+        let status = shell::user_shell_argv(&["gh", "label", "create", label, "--repo", repo])
             .status()
             .context("failed to spawn `gh label create`")?;
         if !status.success() {
@@ -408,8 +412,10 @@ fn apply_one(repo: &str, v: &Verdict) -> Result<()> {
             args.push("--add-label".into());
             args.push(label.clone());
         }
-        let status = Command::new("gh")
-            .args(&args)
+        let argv: Vec<&str> = std::iter::once("gh")
+            .chain(args.iter().map(String::as_str))
+            .collect();
+        let status = shell::user_shell_argv(&argv)
             .status()
             .context("failed to spawn `gh issue edit`")?;
         if !status.success() {
@@ -422,18 +428,19 @@ fn apply_one(repo: &str, v: &Verdict) -> Result<()> {
     }
 
     let body = render_comment_body(v);
-    let status = Command::new("gh")
-        .args([
-            "issue",
-            "comment",
-            &v.number.to_string(),
-            "--repo",
-            repo,
-            "--body",
-            &body,
-        ])
-        .status()
-        .context("failed to spawn `gh issue comment`")?;
+    let number_str = v.number.to_string();
+    let status = shell::user_shell_argv(&[
+        "gh",
+        "issue",
+        "comment",
+        &number_str,
+        "--repo",
+        repo,
+        "--body",
+        &body,
+    ])
+    .status()
+    .context("failed to spawn `gh issue comment`")?;
     if !status.success() {
         bail!(
             "`gh issue comment {}` failed (status {:?})",

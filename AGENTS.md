@@ -85,6 +85,29 @@ cargo run -p rai -- <subcommand> [args]
 
 See `crates/cmd/AGENTS.md` for the full template walkthrough.
 
+## External Process Execution (外部プロセス起動ポリシー)
+
+**基本方針: 外部コマンドは必ずユーザーのデフォルトシェル経由で実行する。**
+
+- 外部バイナリ・ツールを呼び出す場合は、`Command::new("<bin>")` で `execvp` 直叩きしてはならない。
+  必ずユーザーの `$SHELL` を介して `Command::new(shell).arg("-c").arg(<cmd>)`
+  （fish の場合は `-c`、POSIX 系も `-c`）でラップする。
+- 理由: ユーザー環境では fish の `function` や zsh の alias など、シェル関数として
+  定義されたコマンド（例: `ccs_print`）が日常的に使われている。`execvp` 直叩きは
+  PATH 上の実バイナリしか解決できないため、これらが ENOENT になる。
+  rai はユーザー寄りの個人 CLI なので、ユーザーが日常使う「シェル関数を含むコマンド」を
+  そのまま受け取れる挙動を **既定** とする。
+- 引数のクォーティングは shell ごとに違う（POSIX は `shell_words::quote`、fish は専用エスケープ）。
+  `rai-core` 側に shell 検出 + クォーティングのユーティリティを置き、各サブコマンドは
+  そこから利用する。POSIX 専用構文（`set -o pipefail`, `$?`, `[ ... ]` 等）と
+  fish 専用構文（`begin; …; end`, `$pipestatus` 等）を混在させない。
+- 例外（直 `execvp` してよい唯一のケース）:
+  - その実行自体がシェル起動である場合（`Command::new($SHELL).arg("-c")…`）。
+  - 完全に rai 内部限定で、ユーザー設定や `--engine-cmd` 等のユーザー入力に依存しない、
+    かつシェル機能を一切要求しないと保証できる場合のみ。判断に迷ったらシェル経由を選ぶ。
+- ユーザー指定の `--engine-cmd` のような自由入力は **常に** シェル経由で実行する。
+  ここを直叩きにすると fish function 依存の値（`ccs_print c1` など）が動かない。
+
 ## Important Instructions
 
 - The binary is **only** `rai`. Subcommands are library crates — never add a `[[bin]]`.
