@@ -934,7 +934,7 @@ fn local_origin_head_branch() -> Option<String> {
 }
 
 fn commit_subject(number: u64, title: &str) -> String {
-    let prefix = format!("Implement issue #{number}: ");
+    let prefix = format!("chore(issue-{number}): ");
     format!(
         "{prefix}{}",
         truncate_title(title, 72usize.saturating_sub(prefix.len()))
@@ -942,7 +942,11 @@ fn commit_subject(number: u64, title: &str) -> String {
 }
 
 fn pr_title(number: u64, title: &str) -> String {
-    format!("Implement issue #{number}: {}", truncate_title(title, 80))
+    let prefix = format!("chore(issue-{number}): ");
+    format!(
+        "{prefix}{}",
+        truncate_title(title, 80usize.saturating_sub(prefix.len()))
+    )
 }
 
 fn truncate_title(title: &str, max_chars: usize) -> String {
@@ -1214,6 +1218,8 @@ mod tests {
         let long = "A title with many words that should be truncated before it grows past the intended subject length";
 
         assert!(commit_subject(13, long).len() <= 72);
-        assert!(pr_title(13, long).starts_with("Implement issue #13: "));
+        assert!(commit_subject(13, long).starts_with("chore(issue-13): "));
+        assert!(pr_title(13, long).len() <= 80);
+        assert!(pr_title(13, long).starts_with("chore(issue-13): "));
     }
 }

@@ -40,6 +40,8 @@ GitHub Issue を起点に、専用の git worktree (`gwq`) と tmux session を�
   - `--no-tmux` で tmux を介さず前面実行 (デバッグ用)。
 - agent 終了後の自動公開:
   - agent が正常終了し、worktree に未コミット変更が残っている場合は自動で commit する。
+    commit subject / PR title は conventional-commits 形式 (`chore(issue-<N>): <title>`)
+    で生成し、対象リポジトリで commitlint / husky commit-msg hook が有効でも通る形にする。
   - agent が正常終了し、PR 化できるローカル commit がある場合は自動で push し、`gh pr create` で PR を作成する。
   - 既に同じ branch の PR がある場合は重複作成しない。
   - agent が異常終了した場合は自動 commit / push / PR 作成を行わない。
@@ -61,8 +63,11 @@ GitHub Issue を起点に、専用の git worktree (`gwq`) と tmux session を�
 - [ ] branch 名生成が現行 fish 版と一致 (slug 規則, ts 形式)。
 - [ ] gwq existing 時の attach / force-recreate / abort が動く。
 - [ ] tmux session が `gwq-run-issue-<N>-<ts>` で立ち上がり、`-c` で worktree path に cd される。
-- [ ] agent 正常終了後に未コミット変更があれば自動で commit される。
+- [ ] agent 正常終了後に未コミット変更があれば自動で commit される。commit subject は
+      `chore(issue-<N>): <title>` 形式で、conventional-commits 準拠の commitlint hook を
+      持つリポジトリでも `husky commit-msg` を通過する。
 - [ ] agent 正常終了後にローカル commit があれば push され、`gh pr create` で PR が作成される。
+      PR title も `chore(issue-<N>): <title>` 形式とする。
 - [ ] 同じ branch の PR が既にある場合は PR を重複作成しない。
 - [ ] agent 異常終了時は自動 commit / push / PR 作成を行わない。
 - [ ] `--no-auto-publish` で agent 終了後の自動公開を無効化できる。
