@@ -4,6 +4,8 @@ use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
 use chrono::Local;
@@ -193,16 +195,19 @@ fn run_one(cmd: &Cmd, issue: &Issue) -> Result<()> {
     };
     let exe = std::env::current_exe().context("failed to resolve current executable")?;
     let rai_exe = exe.display().to_string();
+    let shell_path = user_shell_path();
+    let shell = detect_shell_kind(&shell_path);
     let engine_cmd = build_engine_cmd(&cmd.engine_cmd, cmd.permission_mode);
-    let full_cmd = build_agent_shell_command(&engine_cmd, &prompt, &rai_exe, finalizer.as_deref());
+    let full_cmd =
+        build_agent_shell_command(&engine_cmd, &prompt, &rai_exe, finalizer.as_deref(), shell);
 
     if cmd.no_tmux {
-        let status = Command::new("sh")
+        let status = Command::new(&shell_path)
             .arg("-c")
             .arg(&full_cmd)
             .current_dir(&wt.path)
             .status()
-            .context("failed to spawn engine_cmd")?;
+            .with_context(|| format!("failed to spawn `{shell_path} -c`"))?;
         if !status.success() {
             bail!("engine_cmd exited with {:?}", status.code());
         }
@@ -211,7 +216,10 @@ fn run_one(cmd: &Cmd, issue: &Issue) -> Result<()> {
 
     let ts = Local::now().format("%Y%m%d-%H%M%S");
     let session = format!("gwq-run-issue-{}-{ts}", issue.number);
-    let status = Command::new("tmux")
+    let log_path = engine_log_path(&session)?;
+    let wrapped_cmd = wrap_with_log(&full_cmd, &log_path, shell);
+
+    let spawn = Command::new("tmux")
         .args([
             "new-session",
             "-d",
@@ -219,31 +227,127 @@ fn run_one(cmd: &Cmd, issue: &Issue) -> Result<()> {
             &session,
             "-c",
             &wt.path.display().to_string(),
-            &full_cmd,
+            &wrapped_cmd,
         ])
         .status();
-    match status {
-        Ok(s) if s.success() => {
-            println!("tmux session: {session}");
-            println!("cwd: {}", wt.path.display());
-            println!("attach: tmux attach -t {session}");
-            let _ = (&issue.owner, &issue.repo);
-            Ok(())
+    if let Err(e) = spawn {
+        if wt.created {
+            rollback_worktree(&branch);
         }
-        other => {
-            if wt.created {
-                eprintln!("tmux start failed; rolling back worktree");
-                Command::new("gwq")
-                    .args(["remove", "--force", &branch])
-                    .status()
-                    .ok();
+        return Err(anyhow::Error::new(e).context("failed to spawn tmux"));
+    }
+    let spawn = spawn.unwrap();
+    if !spawn.success() {
+        if wt.created {
+            rollback_worktree(&branch);
+        }
+        bail!("tmux new-session exited with {:?}", spawn.code());
+    }
+
+    // tmux new-session -d returns success even when the inner command fails
+    // (e.g. `ccs` not on PATH for tmux's default-shell). Verify the session
+    // is still alive shortly after launch and surface the captured log on
+    // immediate failure (fail-fast).
+    thread::sleep(Duration::from_millis(750));
+    if !tmux_has_session(&session) {
+        let tail = read_log_tail(&log_path, 40).unwrap_or_default();
+        if wt.created {
+            rollback_worktree(&branch);
+        }
+        bail!(
+            "tmux session `{session}` exited immediately. log: {}\n--- last lines ---\n{}",
+            log_path.display(),
+            if tail.trim().is_empty() {
+                "(empty log)".to_string()
+            } else {
+                tail
             }
-            match other {
-                Ok(s) => bail!("tmux exited with {:?}", s.code()),
-                Err(e) => Err(anyhow::Error::new(e).context("failed to spawn tmux")),
-            }
+        );
+    }
+
+    println!("tmux session: {session}");
+    println!("cwd: {}", wt.path.display());
+    println!("log: {}", log_path.display());
+    println!("attach: tmux attach -t {session}");
+    let _ = (&issue.owner, &issue.repo);
+    Ok(())
+}
+
+fn rollback_worktree(branch: &str) {
+    eprintln!("tmux start failed; rolling back worktree");
+    Command::new("gwq")
+        .args(["remove", "--force", branch])
+        .status()
+        .ok();
+}
+
+fn engine_log_path(session: &str) -> Result<PathBuf> {
+    let dir = std::env::temp_dir().join("rai-issue-develop");
+    fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create log dir: {}", dir.display()))?;
+    Ok(dir.join(format!("{session}.log")))
+}
+
+fn wrap_with_log(inner: &str, log_path: &Path, shell: Shell) -> String {
+    let log = shell_quote(&log_path.display().to_string());
+    match shell {
+        Shell::Posix => format!("({inner}) 2>&1 | tee -a {log}"),
+        Shell::Fish => format!("begin; {inner}; end 2>&1 | tee -a {log}"),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shell {
+    Posix,
+    Fish,
+}
+
+fn user_shell_path() -> String {
+    std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+}
+
+fn detect_shell_kind(path: &str) -> Shell {
+    let base = std::path::Path::new(path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    if base == "fish" {
+        Shell::Fish
+    } else {
+        Shell::Posix
+    }
+}
+
+fn shell_quote_fish(s: &str) -> String {
+    // fish 's single-quoted strings only escape backslash and single-quote.
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            _ => out.push(c),
         }
     }
+    out.push('\'');
+    out
+}
+
+fn tmux_has_session(session: &str) -> bool {
+    Command::new("tmux")
+        .args(["has-session", "-t", session])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn read_log_tail(path: &Path, max_lines: usize) -> Option<String> {
+    let body = fs::read_to_string(path).ok()?;
+    let lines: Vec<&str> = body.lines().collect();
+    let start = lines.len().saturating_sub(max_lines);
+    Some(lines[start..].join("\n"))
 }
 
 fn resolve_issues(cmd: &Cmd) -> Result<Vec<Issue>> {
@@ -572,19 +676,43 @@ fn build_agent_shell_command(
     prompt: &str,
     rai_exe: &str,
     finalizer: Option<&str>,
+    shell: Shell,
 ) -> String {
+    let quote = match shell {
+        Shell::Posix => |s: &str| shell_quote(s),
+        Shell::Fish => shell_quote_fish,
+    };
     let has_placeholder = engine_cmd.contains("{PROMPT}") || engine_cmd.contains("{RAI}");
     let agent = if has_placeholder {
         engine_cmd
-            .replace("{PROMPT}", &shell_words::quote(prompt))
-            .replace("{RAI}", &shell_quote(rai_exe))
+            .replace("{PROMPT}", &quote(prompt))
+            .replace("{RAI}", &quote(rai_exe))
     } else {
-        format!("{} {}", engine_cmd, shell_words::quote(prompt))
+        format!("{} {}", engine_cmd, quote(prompt))
     };
+    match shell {
+        Shell::Posix => build_posix_agent_block(&agent, finalizer),
+        Shell::Fish => build_fish_agent_block(&agent, finalizer),
+    }
+}
+
+fn build_posix_agent_block(agent: &str, finalizer: Option<&str>) -> String {
     let agent_block = format!("set -o pipefail; ({agent})");
     match finalizer {
         Some(finalizer) => format!(
             "{agent_block}; __rai_agent_status=$?; if [ \"$__rai_agent_status\" -ne 0 ]; then echo \"rai: agent exited with status $__rai_agent_status; skip auto publish\" >&2; exit \"$__rai_agent_status\"; fi; {finalizer}"
+        ),
+        None => agent_block,
+    }
+}
+
+fn build_fish_agent_block(agent: &str, finalizer: Option<&str>) -> String {
+    // Capture worst pipe status to emulate POSIX `set -o pipefail`.
+    let pipefail = "set -l __rai_pipe $pipestatus; set -l __rai_agent_status 0; for s in $__rai_pipe; if test $s -ne 0; set __rai_agent_status $s; end; end";
+    let agent_block = format!("begin; {agent}; end; {pipefail}");
+    match finalizer {
+        Some(finalizer) => format!(
+            "{agent_block}; if test $__rai_agent_status -ne 0; echo \"rai: agent exited with status $__rai_agent_status; skip auto publish\" >&2; exit $__rai_agent_status; end; {finalizer}"
         ),
         None => agent_block,
     }
@@ -843,9 +971,12 @@ fn gh_capture(args: &[&str]) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::{
         build_agent_shell_command, build_engine_cmd, build_prompt, commit_subject, default_branch,
-        parse_selected_issues, pr_title, slugify, PermissionMode,
+        detect_shell_kind, parse_selected_issues, pr_title, read_log_tail, shell_quote_fish,
+        slugify, wrap_with_log, PermissionMode, Shell,
     };
 
     #[test]
@@ -921,6 +1052,7 @@ mod tests {
             "hello world",
             "/opt/rai/rai",
             Some("rai finalize"),
+            Shell::Posix,
         );
 
         assert!(cmd.starts_with("set -o pipefail; (agent --flag 'hello world')"));
@@ -935,6 +1067,7 @@ mod tests {
             "hello world",
             "/opt/rai/rai",
             None,
+            Shell::Posix,
         );
 
         assert_eq!(
@@ -950,9 +1083,66 @@ mod tests {
             "p",
             "/path with spaces/rai",
             None,
+            Shell::Posix,
         );
 
         assert!(cmd.contains("'/path with spaces/rai'"));
+    }
+
+    #[test]
+    fn agent_shell_command_emits_fish_block_for_fish_shell() {
+        let cmd = build_agent_shell_command(
+            "ccs c1 -- {PROMPT} | {RAI} claude format",
+            "hello world",
+            "/opt/rai/rai",
+            Some("rai finalize"),
+            Shell::Fish,
+        );
+
+        assert!(cmd.starts_with(
+            "begin; ccs c1 -- 'hello world' | '/opt/rai/rai' claude format; end; set -l __rai_pipe $pipestatus"
+        ));
+        assert!(cmd.contains("for s in $__rai_pipe"));
+        assert!(cmd.contains("if test $__rai_agent_status -ne 0"));
+        assert!(cmd.ends_with("rai finalize"));
+        // POSIX-only constructs must be absent.
+        assert!(!cmd.contains("set -o pipefail"));
+        assert!(!cmd.contains("$?"));
+    }
+
+    #[test]
+    fn agent_shell_command_fish_without_finalizer_omits_check() {
+        let cmd = build_agent_shell_command("agent --x", "p", "/opt/rai/rai", None, Shell::Fish);
+
+        assert!(cmd.starts_with("begin; agent --x 'p'; end;"));
+        assert!(!cmd.contains("skip auto publish"));
+    }
+
+    #[test]
+    fn detect_shell_kind_recognises_fish_and_falls_back_to_posix() {
+        assert_eq!(detect_shell_kind("/opt/homebrew/bin/fish"), Shell::Fish);
+        assert_eq!(detect_shell_kind("/usr/local/bin/fish"), Shell::Fish);
+        assert_eq!(detect_shell_kind("/bin/zsh"), Shell::Posix);
+        assert_eq!(detect_shell_kind("/bin/bash"), Shell::Posix);
+        assert_eq!(detect_shell_kind("/bin/sh"), Shell::Posix);
+        assert_eq!(detect_shell_kind(""), Shell::Posix);
+    }
+
+    #[test]
+    fn shell_quote_fish_escapes_quotes_and_backslashes() {
+        assert_eq!(shell_quote_fish("plain"), "'plain'");
+        assert_eq!(shell_quote_fish("a'b"), "'a\\'b'");
+        assert_eq!(shell_quote_fish("a\\b"), "'a\\\\b'");
+        assert_eq!(shell_quote_fish("space here"), "'space here'");
+    }
+
+    #[test]
+    fn wrap_with_log_uses_begin_end_for_fish() {
+        let wrapped = wrap_with_log("inner", Path::new("/tmp/run with space.log"), Shell::Fish);
+        assert_eq!(
+            wrapped,
+            "begin; inner; end 2>&1 | tee -a '/tmp/run with space.log'"
+        );
     }
 
     #[test]
@@ -989,6 +1179,34 @@ mod tests {
         assert!(crate::develop::DEFAULT_ENGINE_CMD.contains("{PROMPT}"));
         assert!(crate::develop::DEFAULT_ENGINE_CMD.contains("{RAI} claude format"));
         assert!(!crate::develop::DEFAULT_ENGINE_CMD.contains("ccs_print"));
+    }
+
+    #[test]
+    fn wrap_with_log_tees_to_quoted_path() {
+        let wrapped = wrap_with_log(
+            "agent --x",
+            Path::new("/tmp/has space/run.log"),
+            Shell::Posix,
+        );
+
+        assert_eq!(
+            wrapped,
+            "(agent --x) 2>&1 | tee -a '/tmp/has space/run.log'"
+        );
+    }
+
+    #[test]
+    fn read_log_tail_returns_last_lines() {
+        let dir = std::env::temp_dir().join("rai-issue-develop-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("read_log_tail.log");
+        std::fs::write(&path, "a\nb\nc\nd\ne\n").unwrap();
+
+        let tail = read_log_tail(&path, 3).unwrap();
+        assert_eq!(tail, "c\nd\ne");
+
+        let tail_all = read_log_tail(&path, 100).unwrap();
+        assert_eq!(tail_all, "a\nb\nc\nd\ne");
     }
 
     #[test]
