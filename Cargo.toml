@@ -29,6 +29,7 @@ rai-cmd-issue = { path = "crates/cmd/rai-cmd-issue", version = "0.1.0" }
 rai-cmd-gwq = { path = "crates/cmd/rai-cmd-gwq", version = "0.1.0" }
 rai-cmd-conflicts = { path = "crates/cmd/rai-cmd-conflicts", version = "0.1.0" }
 rai-cmd-completion = { path = "crates/cmd/rai-cmd-completion", version = "0.1.0" }
+rai-cmd-doctor = { path = "crates/cmd/rai-cmd-doctor", version = "0.1.0" }
 
 # 外部crate（共通バージョン）
 clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }

@@ -51,6 +51,8 @@ enum Cmd {
     Conflicts(rai_cmd_conflicts::Cmd),
     /// 指定シェル向けの補完スクリプトを stdout に出力する。
     Completion(rai_cmd_completion::Cmd),
+    /// rai が依存している外部 CLI が揃っているかを診断する。
+    Doctor(rai_cmd_doctor::Cmd),
 }
 
 impl Run for Cmd {
@@ -68,6 +70,7 @@ impl Run for Cmd {
             Cmd::Gwq(c) => c.run(ctx),
             Cmd::Conflicts(c) => c.run(ctx),
             Cmd::Completion(c) => c.print(&mut Cli::command()),
+            Cmd::Doctor(c) => c.run(ctx),
         }
     }
 }

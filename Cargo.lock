@@ -440,6 +440,7 @@ dependencies = [
  "rai-cmd-conflicts",
  "rai-cmd-date",
  "rai-cmd-dev",
+ "rai-cmd-doctor",
  "rai-cmd-gh",
  "rai-cmd-git",
  "rai-cmd-gwq",
@@ -496,6 +497,15 @@ dependencies = [
 
 [[package]]
 name = "rai-cmd-dev"
+version = "0.1.10"
+dependencies = [
+ "anyhow",
+ "clap",
+ "rai-core",
+]
+
+[[package]]
+name = "rai-cmd-doctor"
 version = "0.1.10"
 dependencies = [
  "anyhow",

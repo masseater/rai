@@ -1,0 +1,14 @@
+[package]
+name = "rai-cmd-doctor"
+description = "`rai doctor` — rai が依存している外部 CLI ツールが揃っているかを診断する。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+rai-core.workspace = true
+clap.workspace = true
+anyhow.workspace = true
