@@ -34,7 +34,7 @@ cargo install --path crates/rai
 | `rai dev`        | Pick a repo / worktree via `ghq` + `gwq` + `fzf`.                 |
 | `rai git`        | Git utility subcommands (autopull, track-mine, …).                |
 | `rai pr`         | GitHub Pull Request helpers.                                      |
-| `rai issue`      | Develop from GitHub Issues and inventory issue lists with an agent. |
+| `rai issue`      | Develop from Issues, inventory with an agent, and triage results.  |
 | `rai gwq`        | gwq worktree cleanup helpers.                                     |
 | `rai conflicts`  | Long-running batch that resolves CONFLICTING PRs via an agent.    |
 | `rai completion` | Emit a shell completion script (bash / zsh / fish / powershell / elvish). |
@@ -50,10 +50,25 @@ alias gh-issue-fix 'rai issue develop'
 ```
 
 To inventory Issues without letting the AI fetch them, have `rai` collect the
-Issue JSON and pass the fixed prompt to your engine:
+Issue JSON, pass the fixed prompt to your engine, and persist the verdict on
+each Issue as a comment + `triage:*` label so you can mechanically process the
+results without re-asking the AI:
 
 ```sh
+# Dry-run preview only.
 rai issue inventory --repo OWNER/REPO --engine-cmd "ccs_print c1"
+
+# Commit comments and labels to GitHub.
+rai issue inventory --repo OWNER/REPO --engine-cmd "ccs_print c1" --apply
+
+# Save engine output and re-apply later without rerunning the AI.
+rai issue inventory --save-verdicts /tmp/v.txt
+rai issue inventory --from-verdicts /tmp/v.txt --apply
+
+# Review the labeled issues one by one and apply close/keep decisions.
+# Shows body + comments for each issue and prompts c/k/s/q. The actual
+# `gh issue close` and label removal are batched after the loop.
+rai issue triage --repo OWNER/REPO --reason completed
 ```
 
 ## Shell Completion
