@@ -98,3 +98,4 @@ See `crates/cmd/AGENTS.md` for the full template walkthrough.
 - CI runs `fmt`, `clippy -D warnings`, and `test` on Linux and macOS — keep all
   three green locally before pushing.
 - Pursue the ideal state. Backwards-compatibility shims are not a goal of this repo.
+- Format any information passed to AI agents as Markdown (AIに渡す情報はmarkdownに整形すること).
