@@ -121,6 +121,15 @@ pub struct FinalizeCmd {
     /// PR base branch, when known.
     #[arg(long)]
     pr_base: Option<String>,
+
+    /// engine_cmd template forwarded from `rai issue develop` so the finalize
+    /// agent can be spawned with the same engine as the implementation agent.
+    #[arg(long, value_name = "CMD", default_value = DEFAULT_ENGINE_CMD)]
+    engine_cmd: String,
+
+    /// `--permission-mode` forwarded from `rai issue develop`.
+    #[arg(long, value_name = "MODE", value_enum)]
+    permission_mode: Option<PermissionMode>,
 }
 
 impl Run for FinalizeCmd {
@@ -132,6 +141,8 @@ impl Run for FinalizeCmd {
             repo: self.repo,
             branch: self.branch,
             pr_base: self.pr_base,
+            engine_cmd: self.engine_cmd,
+            permission_mode: self.permission_mode,
         })
     }
 }
@@ -647,11 +658,11 @@ fn build_prompt(
     }
     if auto_publish {
         Ok(format!(
-            "GitHub Issue {url} (`{title}`) を一気通貫で開発してください。テスト・ビルド・clippy をローカルで通すこと。agent終了後、未コミット変更またはローカルcommitがあれば `rai issue develop` が commit / push / `gh pr create` を自動実行します。"
+            "GitHub Issue {url} (`{title}`) を一気通貫で開発してください。テスト・ビルド・lint をローカルで通すこと。agent 正常終了後、未コミット変更または未 push の commit が残っていれば、`rai issue develop` が別の finalize agent を起動して repo の commit 規約を調査した上で commit / push / `gh pr create` を実施します。あなた自身が commit / push / PR まで終わらせても問題ありません (その場合 finalize agent は何もすることが無くなり、空の worktree クリーンアップのみ行います)。"
         ))
     } else {
         Ok(format!(
-            "GitHub Issue {url} (`{title}`) を一気通貫で開発し、`gh pr create` で PR を作成するまで自走してください。テスト・ビルド・clippy をローカルで通すこと。"
+            "GitHub Issue {url} (`{title}`) を一気通貫で開発し、repo の commit 規約に従って commit、`git push`、`gh pr create` で PR 作成まで自走してください。テスト・ビルド・lint をローカルで通すこと。"
         ))
     }
 }
@@ -734,7 +745,13 @@ fn build_finalize_command(cmd: &Cmd, issue: &Issue, branch: &str) -> Result<Stri
         shell_quote(&format!("{}/{}", issue.owner, issue.repo)),
         "--branch".to_string(),
         shell_quote(branch),
+        "--engine-cmd".to_string(),
+        shell_quote(&cmd.engine_cmd),
     ];
+    if let Some(mode) = cmd.permission_mode {
+        parts.push("--permission-mode".to_string());
+        parts.push(mode.as_arg().to_string());
+    }
     let pr_base = cmd.pr_base.clone().or_else(local_origin_head_branch);
     if let Some(base) = pr_base.as_deref() {
         parts.push("--pr-base".to_string());
@@ -754,64 +771,101 @@ fn shell_quote_path(path: &Path) -> String {
 #[derive(Debug)]
 struct PublishContext {
     issue_url: String,
+    #[allow(dead_code)]
     issue_number: u64,
     issue_title: String,
     repo: String,
     branch: String,
     pr_base: Option<String>,
+    engine_cmd: String,
+    permission_mode: Option<PermissionMode>,
 }
 
 fn finalize_after_agent(ctx: &PublishContext) -> Result<()> {
-    eprintln!("rai: agent completed; checking local changes");
+    eprintln!("rai: agent completed; checking local state");
 
-    let had_local_changes = has_local_changes()?;
-    if had_local_changes {
-        git(&["add", "-A"])?;
-        git(&[
-            "commit",
-            "-m",
-            &commit_subject(ctx.issue_number, &ctx.issue_title),
-        ])?;
-    }
+    let has_local = has_local_changes()?;
+    let has_commits = has_publishable_commits(ctx.pr_base.as_deref())?;
 
-    if !had_local_changes && !has_publishable_commits(ctx.pr_base.as_deref())? {
+    if !has_local && !has_commits {
         eprintln!("rai: no local changes or unpublished commits; cleaning up empty worktree");
         cleanup_empty_worktree(&ctx.branch);
         return Ok(());
     }
 
-    let push_ref = format!("HEAD:{}", ctx.branch);
-    git(&["push", "-u", "origin", &push_ref])?;
-
-    if let Some(url) = existing_pr_url(&ctx.branch)? {
-        println!("rai: existing PR: {url}");
-        return Ok(());
-    }
-
-    let title = pr_title(ctx.issue_number, &ctx.issue_title);
-    let body = format!(
-        "Closes {}\n\nCreated automatically by `rai issue develop` after the agent finished successfully.",
-        ctx.issue_url
+    eprintln!(
+        "rai: delegating commit / push / PR to finalize agent (has_local={has_local}, has_commits={has_commits})"
     );
-    let mut args: Vec<&str> = vec![
-        "pr",
-        "create",
-        "--repo",
-        ctx.repo.as_str(),
-        "--head",
-        ctx.branch.as_str(),
-        "--title",
-        title.as_str(),
-        "--body",
-        body.as_str(),
-    ];
-    if let Some(base) = &ctx.pr_base {
-        args.push("--base");
-        args.push(base.as_str());
+
+    let prompt = build_finalize_prompt(ctx, has_local, has_commits);
+    let exe = std::env::current_exe().context("failed to resolve current executable")?;
+    let rai_exe = exe.display().to_string();
+    let shell_path = user_shell_path();
+    let shell = detect_shell_kind(&shell_path);
+    let engine_cmd = build_engine_cmd(&ctx.engine_cmd, ctx.permission_mode);
+    let full_cmd = build_agent_shell_command(&engine_cmd, &prompt, &rai_exe, None, shell);
+
+    let status = Command::new(&shell_path)
+        .arg("-c")
+        .arg(&full_cmd)
+        .status()
+        .with_context(|| format!("failed to spawn finalize agent via `{shell_path} -c`"))?;
+    if !status.success() {
+        bail!("finalize agent exited with {:?}", status.code());
     }
-    let url = gh_capture(&args)?;
-    print!("{url}");
+
+    match existing_pr_url(&ctx.branch)? {
+        Some(url) => {
+            println!("rai: PR: {url}");
+        }
+        None => {
+            eprintln!(
+                "rai: warning — finalize agent finished but no PR detected for branch `{}`. Inspect the worktree and finish manually.",
+                ctx.branch
+            );
+        }
+    }
+
     Ok(())
+}
+
+fn build_finalize_prompt(ctx: &PublishContext, has_local: bool, has_commits: bool) -> String {
+    let state = match (has_local, has_commits) {
+        (true, true) => "未コミットの変更と未 push の commit が両方残っています。",
+        (true, false) => "未コミットの変更が残っています。",
+        (false, true) => "未 push の commit が残っています。",
+        (false, false) => unreachable!("finalize agent invoked with nothing to publish"),
+    };
+    let base_line = match ctx.pr_base.as_deref() {
+        Some(base) => format!("- PR の base branch: `{base}` (`gh pr create --base {base}`)。\n"),
+        None => String::new(),
+    };
+    format!(
+        "GitHub Issue {url} (`{title}`) の作業仕上げ (commit / push / PR 作成) を担当してください。\n\
+\n\
+## 現状\n\
+- worktree のブランチ: `{branch}`\n\
+- {state}\n\
+{base_line}\
+\n\
+## やること\n\
+1. 対象リポジトリの commit メッセージ規約を `git log --oneline -n 30`、`.commitlintrc*` / `commitlint.config.*`、`.husky/commit-msg`、`CONTRIBUTING.md` 等から確認する。\n\
+2. 未コミット変更があれば、その規約に従って論理的な単位で commit する。本文に `Closes {url}` を含めること。\n\
+3. `git push -u origin HEAD:{branch}` で push する。\n\
+4. 既存 PR (`gh pr list --head {branch} --json url --jq '.[0].url'`) が無ければ `gh pr create --repo {repo} --head {branch}` で PR を作成する。タイトル / 本文も同じ規約と repo の PR テンプレートに従う。本文に `Closes {url}` を含めること。base が指定されている場合は `--base` を付ける。\n\
+5. 既存 PR がある場合は新規作成せず、その URL を表示するだけで終わる。\n\
+\n\
+## 制約\n\
+- `git commit --no-verify` / `git push --no-verify` 等で hook を回避するのは禁止。\n\
+- 規約違反で commit-msg hook が落ちた場合は、メッセージを修正して再 commit する。\n\
+- 規約が判定できない場合は、直近の `git log` の体裁に倣う。\n",
+        url = ctx.issue_url,
+        title = ctx.issue_title,
+        branch = ctx.branch,
+        state = state,
+        base_line = base_line,
+        repo = ctx.repo,
+    )
 }
 
 fn has_local_changes() -> Result<bool> {
@@ -863,17 +917,6 @@ fn existing_pr_url(branch: &str) -> Result<Option<String>> {
     } else {
         Ok(Some(url.to_string()))
     }
-}
-
-fn git(args: &[&str]) -> Result<()> {
-    let st = Command::new("git")
-        .args(args)
-        .status()
-        .with_context(|| format!("failed to spawn `git {}`", args.join(" ")))?;
-    if !st.success() {
-        bail!("`git {}` failed with {:?}", args.join(" "), st.code());
-    }
-    Ok(())
 }
 
 fn git_capture(args: &[&str]) -> Result<String> {
@@ -933,30 +976,6 @@ fn local_origin_head_branch() -> Option<String> {
     Some(branch.to_string())
 }
 
-fn commit_subject(number: u64, title: &str) -> String {
-    let prefix = format!("chore(issue-{number}): ");
-    format!(
-        "{prefix}{}",
-        truncate_title(title, 72usize.saturating_sub(prefix.len()))
-    )
-}
-
-fn pr_title(number: u64, title: &str) -> String {
-    let prefix = format!("chore(issue-{number}): ");
-    format!(
-        "{prefix}{}",
-        truncate_title(title, 80usize.saturating_sub(prefix.len()))
-    )
-}
-
-fn truncate_title(title: &str, max_chars: usize) -> String {
-    let compact = title.split_whitespace().collect::<Vec<_>>().join(" ");
-    if compact.chars().count() <= max_chars {
-        return compact;
-    }
-    compact.chars().take(max_chars).collect::<String>()
-}
-
 fn gh_capture(args: &[&str]) -> Result<String> {
     let out = Command::new("gh")
         .args(args)
@@ -978,9 +997,9 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        build_agent_shell_command, build_engine_cmd, build_prompt, commit_subject, default_branch,
-        detect_shell_kind, parse_selected_issues, pr_title, read_log_tail, shell_quote_fish,
-        slugify, wrap_with_log, PermissionMode, Shell,
+        build_agent_shell_command, build_engine_cmd, build_finalize_prompt, build_prompt,
+        default_branch, detect_shell_kind, parse_selected_issues, read_log_tail, shell_quote_fish,
+        slugify, wrap_with_log, PermissionMode, PublishContext, Shell,
     };
 
     #[test]
@@ -1031,7 +1050,8 @@ mod tests {
         )
         .unwrap();
 
-        assert!(prompt.contains("agent終了後"));
+        assert!(prompt.contains("finalize agent"));
+        assert!(prompt.contains("commit 規約"));
         assert!(prompt.contains("commit / push / `gh pr create`"));
     }
 
@@ -1045,8 +1065,9 @@ mod tests {
         )
         .unwrap();
 
-        assert!(prompt.contains("`gh pr create` で PR を作成するまで"));
-        assert!(!prompt.contains("agent終了後"));
+        assert!(prompt.contains("commit 規約"));
+        assert!(prompt.contains("`gh pr create`"));
+        assert!(!prompt.contains("finalize agent"));
     }
 
     #[test]
@@ -1214,12 +1235,46 @@ mod tests {
     }
 
     #[test]
-    fn publish_titles_are_compact() {
-        let long = "A title with many words that should be truncated before it grows past the intended subject length";
+    fn finalize_prompt_delegates_repo_conventions_to_agent() {
+        let ctx = PublishContext {
+            issue_url: "https://github.com/o/r/issues/13".to_string(),
+            issue_number: 13,
+            issue_title: "Some work".to_string(),
+            repo: "o/r".to_string(),
+            branch: "develop/issue-13-some-work-20260430".to_string(),
+            pr_base: Some("main".to_string()),
+            engine_cmd: super::DEFAULT_ENGINE_CMD.to_string(),
+            permission_mode: None,
+        };
 
-        assert!(commit_subject(13, long).len() <= 72);
-        assert!(commit_subject(13, long).starts_with("chore(issue-13): "));
-        assert!(pr_title(13, long).len() <= 80);
-        assert!(pr_title(13, long).starts_with("chore(issue-13): "));
+        let prompt = build_finalize_prompt(&ctx, true, false);
+
+        assert!(prompt.contains("https://github.com/o/r/issues/13"));
+        assert!(prompt.contains("develop/issue-13-some-work-20260430"));
+        assert!(prompt.contains(".commitlintrc"));
+        assert!(prompt.contains("CONTRIBUTING.md"));
+        assert!(prompt.contains("`Closes https://github.com/o/r/issues/13`"));
+        assert!(prompt.contains("gh pr create --repo o/r --head develop/issue-13"));
+        assert!(prompt.contains("--no-verify"));
+        assert!(prompt.contains("`gh pr create --base main`"));
+    }
+
+    #[test]
+    fn finalize_prompt_omits_base_line_when_unspecified() {
+        let ctx = PublishContext {
+            issue_url: "https://github.com/o/r/issues/9".to_string(),
+            issue_number: 9,
+            issue_title: "T".to_string(),
+            repo: "o/r".to_string(),
+            branch: "b".to_string(),
+            pr_base: None,
+            engine_cmd: super::DEFAULT_ENGINE_CMD.to_string(),
+            permission_mode: None,
+        };
+
+        let prompt = build_finalize_prompt(&ctx, false, true);
+
+        assert!(!prompt.contains("base branch:"));
+        assert!(prompt.contains("未 push の commit"));
     }
 }
