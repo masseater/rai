@@ -2,12 +2,12 @@
 
 use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, bail, Context};
 use chrono::Local;
-use clap::Args;
+use clap::{Args, ValueEnum};
 use rai_core::{cli::Run, Ctx, Result};
 use serde::Deserialize;
 
@@ -36,6 +36,87 @@ pub struct Cmd {
     /// tmux を介さず前面で実行 (デバッグ用)。
     #[arg(long)]
     no_tmux: bool,
+
+    /// agent 終了後の自動 commit / push / PR 作成を無効化する。
+    #[arg(long)]
+    no_auto_publish: bool,
+
+    /// 自動作成する PR の base branch。
+    #[arg(long, value_name = "BRANCH")]
+    pr_base: Option<String>,
+
+    /// agent (`claude`) に渡す `--permission-mode` を明示する。
+    #[arg(long, value_name = "MODE", value_enum)]
+    permission_mode: Option<PermissionMode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PermissionMode {
+    #[value(name = "acceptEdits")]
+    AcceptEdits,
+    #[value(name = "auto")]
+    Auto,
+    #[value(name = "bypassPermissions")]
+    BypassPermissions,
+    #[value(name = "default")]
+    Default,
+    #[value(name = "dontAsk")]
+    DontAsk,
+    #[value(name = "plan")]
+    Plan,
+}
+
+impl PermissionMode {
+    fn as_arg(self) -> &'static str {
+        match self {
+            Self::AcceptEdits => "acceptEdits",
+            Self::Auto => "auto",
+            Self::BypassPermissions => "bypassPermissions",
+            Self::Default => "default",
+            Self::DontAsk => "dontAsk",
+            Self::Plan => "plan",
+        }
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct FinalizeCmd {
+    /// Issue URL.
+    #[arg(long)]
+    issue_url: String,
+
+    /// Issue number.
+    #[arg(long)]
+    issue_number: u64,
+
+    /// Issue title.
+    #[arg(long)]
+    issue_title: String,
+
+    /// Repository in OWNER/REPO form.
+    #[arg(long)]
+    repo: String,
+
+    /// Branch being developed.
+    #[arg(long)]
+    branch: String,
+
+    /// PR base branch, when known.
+    #[arg(long)]
+    pr_base: Option<String>,
+}
+
+impl Run for FinalizeCmd {
+    fn run(self, _ctx: &Ctx) -> Result<()> {
+        finalize_after_agent(&PublishContext {
+            issue_url: self.issue_url,
+            issue_number: self.issue_number,
+            issue_title: self.issue_title,
+            repo: self.repo,
+            branch: self.branch,
+            pr_base: self.pr_base,
+        })
+    }
 }
 
 impl Run for Cmd {
@@ -84,8 +165,19 @@ fn run_one(cmd: &Cmd, issue: &Issue) -> Result<()> {
     let wt = ensure_worktree(&branch)?;
     eprintln!("worktree: {}", wt.path.display());
 
-    let prompt = build_prompt(cmd.prompt_template.as_deref(), &issue.url, &issue.title)?;
-    let full_cmd = format!("{} {}", cmd.engine_cmd, shell_words::quote(&prompt),);
+    let prompt = build_prompt(
+        cmd.prompt_template.as_deref(),
+        &issue.url,
+        &issue.title,
+        !cmd.no_auto_publish,
+    )?;
+    let finalizer = if cmd.no_auto_publish {
+        None
+    } else {
+        Some(build_finalize_command(cmd, issue, &branch)?)
+    };
+    let engine_cmd = build_engine_cmd(&cmd.engine_cmd, cmd.permission_mode);
+    let full_cmd = build_agent_shell_command(&engine_cmd, &prompt, finalizer.as_deref());
 
     if cmd.no_tmux {
         let status = Command::new("sh")
@@ -419,7 +511,12 @@ fn prompt_existing(branch: &str) -> Result<ExistingAction> {
     }
 }
 
-fn build_prompt(template: Option<&std::path::Path>, url: &str, title: &str) -> Result<String> {
+fn build_prompt(
+    template: Option<&std::path::Path>,
+    url: &str,
+    title: &str,
+    auto_publish: bool,
+) -> Result<String> {
     if let Some(p) = template {
         let body = fs::read_to_string(p)
             .with_context(|| format!("failed to read prompt template: {}", p.display()))?;
@@ -427,9 +524,267 @@ fn build_prompt(template: Option<&std::path::Path>, url: &str, title: &str) -> R
             .replace("{ISSUE_URL}", url)
             .replace("{ISSUE_TITLE}", title));
     }
-    Ok(format!(
-        "GitHub Issue {url} (`{title}`) を一気通貫で開発し、`gh pr create` で PR を作成するまで自走してください。テスト・ビルド・clippy をローカルで通すこと。"
-    ))
+    if auto_publish {
+        Ok(format!(
+            "GitHub Issue {url} (`{title}`) を一気通貫で開発してください。テスト・ビルド・clippy をローカルで通すこと。agent終了後、未コミット変更またはローカルcommitがあれば `rai issue develop` が commit / push / `gh pr create` を自動実行します。"
+        ))
+    } else {
+        Ok(format!(
+            "GitHub Issue {url} (`{title}`) を一気通貫で開発し、`gh pr create` で PR を作成するまで自走してください。テスト・ビルド・clippy をローカルで通すこと。"
+        ))
+    }
+}
+
+fn build_engine_cmd(engine_cmd: &str, permission_mode: Option<PermissionMode>) -> String {
+    match permission_mode {
+        Some(mode) => format!("{engine_cmd} --permission-mode {}", mode.as_arg()),
+        None => engine_cmd.to_string(),
+    }
+}
+
+fn build_agent_shell_command(engine_cmd: &str, prompt: &str, finalizer: Option<&str>) -> String {
+    let agent = format!("{} {}", engine_cmd, shell_words::quote(prompt));
+    match finalizer {
+        Some(finalizer) => format!(
+            "({agent}); __rai_agent_status=$?; if [ \"$__rai_agent_status\" -ne 0 ]; then echo \"rai: agent exited with status $__rai_agent_status; skip auto publish\" >&2; exit \"$__rai_agent_status\"; fi; {finalizer}"
+        ),
+        None => agent,
+    }
+}
+
+fn build_finalize_command(cmd: &Cmd, issue: &Issue, branch: &str) -> Result<String> {
+    let exe = std::env::current_exe().context("failed to resolve current executable")?;
+    let mut parts = vec![
+        shell_quote_path(&exe),
+        "issue".to_string(),
+        "finalize-agent".to_string(),
+        "--issue-url".to_string(),
+        shell_quote(&issue.url),
+        "--issue-number".to_string(),
+        issue.number.to_string(),
+        "--issue-title".to_string(),
+        shell_quote(&issue.title),
+        "--repo".to_string(),
+        shell_quote(&format!("{}/{}", issue.owner, issue.repo)),
+        "--branch".to_string(),
+        shell_quote(branch),
+    ];
+    let pr_base = cmd.pr_base.clone().or_else(local_origin_head_branch);
+    if let Some(base) = pr_base.as_deref() {
+        parts.push("--pr-base".to_string());
+        parts.push(shell_quote(base));
+    }
+    Ok(parts.join(" "))
+}
+
+fn shell_quote(s: &str) -> String {
+    shell_words::quote(s).into_owned()
+}
+
+fn shell_quote_path(path: &Path) -> String {
+    shell_quote(&path.display().to_string())
+}
+
+#[derive(Debug)]
+struct PublishContext {
+    issue_url: String,
+    issue_number: u64,
+    issue_title: String,
+    repo: String,
+    branch: String,
+    pr_base: Option<String>,
+}
+
+fn finalize_after_agent(ctx: &PublishContext) -> Result<()> {
+    eprintln!("rai: agent completed; checking local changes");
+
+    let had_local_changes = has_local_changes()?;
+    if had_local_changes {
+        git(&["add", "-A"])?;
+        git(&[
+            "commit",
+            "-m",
+            &commit_subject(ctx.issue_number, &ctx.issue_title),
+        ])?;
+    }
+
+    if !had_local_changes && !has_publishable_commits(ctx.pr_base.as_deref())? {
+        eprintln!("rai: no local changes or unpublished commits; cleaning up empty worktree");
+        cleanup_empty_worktree(&ctx.branch);
+        return Ok(());
+    }
+
+    let push_ref = format!("HEAD:{}", ctx.branch);
+    git(&["push", "-u", "origin", &push_ref])?;
+
+    if let Some(url) = existing_pr_url(&ctx.branch)? {
+        println!("rai: existing PR: {url}");
+        return Ok(());
+    }
+
+    let title = pr_title(ctx.issue_number, &ctx.issue_title);
+    let body = format!(
+        "Closes {}\n\nCreated automatically by `rai issue develop` after the agent finished successfully.",
+        ctx.issue_url
+    );
+    let mut args: Vec<&str> = vec![
+        "pr",
+        "create",
+        "--repo",
+        ctx.repo.as_str(),
+        "--head",
+        ctx.branch.as_str(),
+        "--title",
+        title.as_str(),
+        "--body",
+        body.as_str(),
+    ];
+    if let Some(base) = &ctx.pr_base {
+        args.push("--base");
+        args.push(base.as_str());
+    }
+    let url = gh_capture(&args)?;
+    print!("{url}");
+    Ok(())
+}
+
+fn has_local_changes() -> Result<bool> {
+    Ok(!git_capture(&["status", "--porcelain"])?.trim().is_empty())
+}
+
+fn has_publishable_commits(pr_base: Option<&str>) -> Result<bool> {
+    if let Some(base) = pr_base {
+        if has_commits_since(&format!("origin/{base}"))? {
+            return Ok(true);
+        }
+        if has_commits_since(base)? {
+            return Ok(true);
+        }
+    }
+
+    let Ok(upstream) = git_capture(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+    else {
+        return Ok(false);
+    };
+    has_commits_since(upstream.trim())
+}
+
+fn has_commits_since(base_ref: &str) -> Result<bool> {
+    let Ok(base) = git_capture(&["merge-base", "HEAD", base_ref]) else {
+        return Ok(false);
+    };
+    let range = format!("{}..HEAD", base.trim());
+    let count = git_capture(&["rev-list", "--count", &range])?;
+    Ok(count.trim().parse::<u64>().unwrap_or(0) > 0)
+}
+
+fn existing_pr_url(branch: &str) -> Result<Option<String>> {
+    let out = gh_capture(&[
+        "pr",
+        "list",
+        "--head",
+        branch,
+        "--json",
+        "url",
+        "--limit",
+        "1",
+        "--jq",
+        ".[0].url // \"\"",
+    ])?;
+    let url = out.trim();
+    if url.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(url.to_string()))
+    }
+}
+
+fn git(args: &[&str]) -> Result<()> {
+    let st = Command::new("git")
+        .args(args)
+        .status()
+        .with_context(|| format!("failed to spawn `git {}`", args.join(" ")))?;
+    if !st.success() {
+        bail!("`git {}` failed with {:?}", args.join(" "), st.code());
+    }
+    Ok(())
+}
+
+fn git_capture(args: &[&str]) -> Result<String> {
+    let out = Command::new("git")
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to spawn `git {}`", args.join(" ")))?;
+    if !out.status.success() {
+        bail!(
+            "`git {}` failed (status {:?}): {}",
+            args.join(" "),
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+fn cleanup_empty_worktree(branch: &str) {
+    let safe_cwd = std::env::temp_dir();
+    let kill = Command::new("gwq")
+        .args(["tmux", "kill", branch])
+        .current_dir(&safe_cwd)
+        .status();
+    if let Err(e) = kill {
+        eprintln!("rai: gwq tmux kill failed to spawn: {e}");
+    }
+    let rm = Command::new("gwq")
+        .args(["remove", "--force", branch])
+        .current_dir(&safe_cwd)
+        .status();
+    match rm {
+        Ok(s) if s.success() => eprintln!("rai: removed empty worktree for {branch}"),
+        Ok(s) => eprintln!(
+            "rai: gwq remove exited with {:?}; leaving worktree",
+            s.code()
+        ),
+        Err(e) => eprintln!("rai: gwq remove failed to spawn: {e}; leaving worktree"),
+    }
+}
+
+fn local_origin_head_branch() -> Option<String> {
+    let out = Command::new("git")
+        .args([
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8_lossy(&out.stdout);
+    let branch = branch.trim().strip_prefix("origin/")?;
+    Some(branch.to_string())
+}
+
+fn commit_subject(number: u64, title: &str) -> String {
+    let prefix = format!("Implement issue #{number}: ");
+    format!(
+        "{prefix}{}",
+        truncate_title(title, 72usize.saturating_sub(prefix.len()))
+    )
+}
+
+fn pr_title(number: u64, title: &str) -> String {
+    format!("Implement issue #{number}: {}", truncate_title(title, 80))
+}
+
+fn truncate_title(title: &str, max_chars: usize) -> String {
+    let compact = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= max_chars {
+        return compact;
+    }
+    compact.chars().take(max_chars).collect::<String>()
 }
 
 fn gh_capture(args: &[&str]) -> Result<String> {
@@ -450,7 +805,10 @@ fn gh_capture(args: &[&str]) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_branch, parse_selected_issues, slugify};
+    use super::{
+        build_agent_shell_command, build_engine_cmd, build_prompt, commit_subject, default_branch,
+        parse_selected_issues, pr_title, slugify, PermissionMode,
+    };
 
     #[test]
     fn default_branch_uses_develop_issue_prefix() {
@@ -488,5 +846,67 @@ mod tests {
             issues,
             vec![(12, "First issue".into()), (34, "Second issue".into())]
         );
+    }
+
+    #[test]
+    fn default_prompt_describes_auto_publish_hook() {
+        let prompt = build_prompt(
+            None,
+            "https://github.com/o/r/issues/13",
+            "Auto publish",
+            true,
+        )
+        .unwrap();
+
+        assert!(prompt.contains("agent終了後"));
+        assert!(prompt.contains("commit / push / `gh pr create`"));
+    }
+
+    #[test]
+    fn default_prompt_asks_agent_to_publish_when_auto_publish_is_disabled() {
+        let prompt = build_prompt(
+            None,
+            "https://github.com/o/r/issues/13",
+            "Manual publish",
+            false,
+        )
+        .unwrap();
+
+        assert!(prompt.contains("`gh pr create` で PR を作成するまで"));
+        assert!(!prompt.contains("agent終了後"));
+    }
+
+    #[test]
+    fn agent_shell_command_runs_finalizer_only_after_success() {
+        let cmd = build_agent_shell_command("agent --flag", "hello world", Some("rai finalize"));
+
+        assert!(cmd.contains("agent --flag 'hello world'"));
+        assert!(cmd.contains("skip auto publish"));
+        assert!(cmd.ends_with("rai finalize"));
+    }
+
+    #[test]
+    fn build_engine_cmd_appends_permission_mode_when_set() {
+        assert_eq!(
+            build_engine_cmd("ccs_print c1", Some(PermissionMode::BypassPermissions)),
+            "ccs_print c1 --permission-mode bypassPermissions"
+        );
+        assert_eq!(
+            build_engine_cmd("ccs_print c1", Some(PermissionMode::DontAsk)),
+            "ccs_print c1 --permission-mode dontAsk"
+        );
+    }
+
+    #[test]
+    fn build_engine_cmd_passes_through_when_not_set() {
+        assert_eq!(build_engine_cmd("ccs_print c1", None), "ccs_print c1");
+    }
+
+    #[test]
+    fn publish_titles_are_compact() {
+        let long = "A title with many words that should be truncated before it grows past the intended subject length";
+
+        assert!(commit_subject(13, long).len() <= 72);
+        assert!(pr_title(13, long).starts_with("Implement issue #13: "));
     }
 }

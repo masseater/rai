@@ -19,6 +19,9 @@ pub struct Cmd {
 enum IssueCmd {
     /// Issue から worktree + tmux + agent CLI を一気通貫で起動する。
     Develop(develop::Cmd),
+    /// Internal post-agent publish hook for `rai issue develop`.
+    #[command(name = "finalize-agent", hide = true)]
+    FinalizeAgent(develop::FinalizeCmd),
     /// Issue 一覧を取得し、固定 prompt で AI engine に棚卸しさせる。
     Inventory(inventory::Cmd),
 }
@@ -27,6 +30,7 @@ impl Run for Cmd {
     fn run(self, ctx: &Ctx) -> Result<()> {
         match self.sub {
             IssueCmd::Develop(c) => c.run(ctx),
+            IssueCmd::FinalizeAgent(c) => c.run(ctx),
             IssueCmd::Inventory(c) => c.run(ctx),
         }
     }
