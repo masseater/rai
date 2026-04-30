@@ -41,10 +41,9 @@ GitHub Issue を起点に、専用の git worktree (`gwq`) と tmux session を�
 - agent 終了後の自動公開:
   - rai 自身は commit メッセージや PR タイトルを組み立てない。代わりに、agent が正常終了し
     かつ worktree に未コミット変更または未 push の commit が残っている場合、同じ engine_cmd で
-    **finalize agent** を起動する。finalize agent は対象リポジトリの commit 規約 (`git log` /
-    `commitlint.config.*` / `.husky/commit-msg` / `CONTRIBUTING.md` 等) を調査した上で、規約に
-    沿った commit を作成し、`git push` と `gh pr create` を実行する責務を持つ。これは
-    「リポジトリごとに違う commit / PR の流儀」を rai 側にハードコードしないための設計。
+    **finalize agent** を起動し、commit / push / `gh pr create` の責務をそちらに委ねる。commit
+    規約は対象リポジトリの commit-msg hook が commit 時に勝手に発火して教えてくれる前提で、
+    rai 側で規約の所在を列挙したり押し付けたりしないことが設計上のキモ。
   - finalize agent は実装 agent と同じ engine_cmd / `--permission-mode` で起動される。
   - agent 異常終了時は finalize agent を起動しない。
   - 実装 agent が自分で commit / push / PR まで終わらせていてもよい。その場合 finalize agent は
@@ -70,9 +69,8 @@ GitHub Issue を起点に、専用の git worktree (`gwq`) と tmux session を�
 - [ ] gwq existing 時の attach / force-recreate / abort が動く。
 - [ ] tmux session が `gwq-run-issue-<N>-<ts>` で立ち上がり、`-c` で worktree path に cd される。
 - [ ] agent 正常終了後に未コミット変更または未 push commit があれば、rai が finalize agent を
-      起動する。finalize agent は対象 repo の commit 規約を自力で調査し、規約に従った commit /
-      push / `gh pr create` を実施する。rai 自身は commit メッセージ / PR タイトルをハードコード
-      しない (リポジトリごとに違う conventional-commits / scope ルール / PR テンプレートを尊重)。
+      起動する。finalize agent は commit / push / `gh pr create` を実施する。commit メッセージや
+      PR タイトルは commit-msg hook の発火に任せる前提で、rai 側ではハードコードしない。
 - [ ] finalize agent は実装 agent と同じ engine_cmd / `--permission-mode` で起動される。
 - [ ] 同じ branch の PR が既にある場合は PR を重複作成しない。
 - [ ] agent 異常終了時は自動 commit / push / PR 作成を行わない。

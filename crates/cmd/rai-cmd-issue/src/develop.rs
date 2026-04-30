@@ -658,11 +658,11 @@ fn build_prompt(
     }
     if auto_publish {
         Ok(format!(
-            "GitHub Issue {url} (`{title}`) を一気通貫で開発してください。テスト・ビルド・lint をローカルで通すこと。agent 正常終了後、未コミット変更または未 push の commit が残っていれば、`rai issue develop` が別の finalize agent を起動して repo の commit 規約を調査した上で commit / push / `gh pr create` を実施します。あなた自身が commit / push / PR まで終わらせても問題ありません (その場合 finalize agent は何もすることが無くなり、空の worktree クリーンアップのみ行います)。"
+            "GitHub Issue {url} (`{title}`) を一気通貫で開発し、PR を出すところまで自走してください。実装したらテスト・ビルド・lint をローカルで通し、commit して push し、`gh pr create` で PR を作成します。PR 本文には `Closes {url}` を含めてください。commit-msg hook がメッセージを弾いた場合はメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。万一あなたが PR まで辿り着かずに終了した場合の保険として、`rai issue develop` 側が finalize agent を起動して残りを引き取りますが、これはあくまで fallback なので、原則あなた自身で PR まで完了させてください。"
         ))
     } else {
         Ok(format!(
-            "GitHub Issue {url} (`{title}`) を一気通貫で開発し、repo の commit 規約に従って commit、`git push`、`gh pr create` で PR 作成まで自走してください。テスト・ビルド・lint をローカルで通すこと。"
+            "GitHub Issue {url} (`{title}`) を一気通貫で開発し、commit、push、`gh pr create` で PR を作成するところまで自走してください。テスト・ビルド・lint をローカルで通すこと。commit-msg hook がメッセージを弾いたらメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
         ))
     }
 }
@@ -831,39 +831,28 @@ fn finalize_after_agent(ctx: &PublishContext) -> Result<()> {
 
 fn build_finalize_prompt(ctx: &PublishContext, has_local: bool, has_commits: bool) -> String {
     let state = match (has_local, has_commits) {
-        (true, true) => "未コミットの変更と未 push の commit が両方残っています。",
-        (true, false) => "未コミットの変更が残っています。",
-        (false, true) => "未 push の commit が残っています。",
+        (true, true) => "未コミットの変更と未 push の commit が両方残っています",
+        (true, false) => "未コミットの変更が残っています",
+        (false, true) => "未 push の commit が残っています",
         (false, false) => unreachable!("finalize agent invoked with nothing to publish"),
     };
-    let base_line = match ctx.pr_base.as_deref() {
-        Some(base) => format!("- PR の base branch: `{base}` (`gh pr create --base {base}`)。\n"),
+    let base_sentence = match ctx.pr_base.as_deref() {
+        Some(base) => format!(" PR を作成する際は base を `{base}` にしてください。"),
         None => String::new(),
     };
     format!(
-        "GitHub Issue {url} (`{title}`) の作業仕上げ (commit / push / PR 作成) を担当してください。\n\
-\n\
-## 現状\n\
-- worktree のブランチ: `{branch}`\n\
-- {state}\n\
-{base_line}\
-\n\
-## やること\n\
-1. 対象リポジトリの commit メッセージ規約を `git log --oneline -n 30`、`.commitlintrc*` / `commitlint.config.*`、`.husky/commit-msg`、`CONTRIBUTING.md` 等から確認する。\n\
-2. 未コミット変更があれば、その規約に従って論理的な単位で commit する。本文に `Closes {url}` を含めること。\n\
-3. `git push -u origin HEAD:{branch}` で push する。\n\
-4. 既存 PR (`gh pr list --head {branch} --json url --jq '.[0].url'`) が無ければ `gh pr create --repo {repo} --head {branch}` で PR を作成する。タイトル / 本文も同じ規約と repo の PR テンプレートに従う。本文に `Closes {url}` を含めること。base が指定されている場合は `--base` を付ける。\n\
-5. 既存 PR がある場合は新規作成せず、その URL を表示するだけで終わる。\n\
-\n\
-## 制約\n\
-- `git commit --no-verify` / `git push --no-verify` 等で hook を回避するのは禁止。\n\
-- 規約違反で commit-msg hook が落ちた場合は、メッセージを修正して再 commit する。\n\
-- 規約が判定できない場合は、直近の `git log` の体裁に倣う。\n",
+        "GitHub Issue {url} (`{title}`) の作業を引き取って commit、push、PR の作成まで仕上げてください。\
+worktree のブランチは `{branch}` で、現在 {state}。\
+未コミット変更があれば論理的な単位で commit し、`git push -u origin HEAD:{branch}` で push したあと、\
+リポジトリ `{repo}` に対して `gh pr create` で PR を作成してください。本文には `Closes {url}` を含めること。\
+既に同じブランチに PR がある場合は新規作成せず、その URL を表示するだけで終わってください。{base_sentence} \
+commit-msg hook がメッセージを弾いた場合はメッセージを直して commit し直してください。\
+`--no-verify` などで hook を回避するのは禁止です。",
         url = ctx.issue_url,
         title = ctx.issue_title,
         branch = ctx.branch,
         state = state,
-        base_line = base_line,
+        base_sentence = base_sentence,
         repo = ctx.repo,
     )
 }
@@ -1041,7 +1030,7 @@ mod tests {
     }
 
     #[test]
-    fn default_prompt_describes_auto_publish_hook() {
+    fn default_prompt_directs_agent_to_publish_with_finalize_as_fallback() {
         let prompt = build_prompt(
             None,
             "https://github.com/o/r/issues/13",
@@ -1050,9 +1039,19 @@ mod tests {
         )
         .unwrap();
 
+        // The implementation agent itself is told to commit/push/PR.
+        assert!(prompt.contains("PR を出すところまで自走"));
+        assert!(prompt.contains("`gh pr create`"));
+        assert!(prompt.contains("Closes https://github.com/o/r/issues/13"));
+        assert!(prompt.contains("commit-msg hook"));
+        assert!(prompt.contains("--no-verify"));
+        // finalize agent is only mentioned as a fallback safety net.
         assert!(prompt.contains("finalize agent"));
-        assert!(prompt.contains("commit 規約"));
-        assert!(prompt.contains("commit / push / `gh pr create`"));
+        assert!(prompt.contains("fallback"));
+        // No hardcoded enumeration of commit-rule sources — the hook fires on its own.
+        assert!(!prompt.contains(".commitlintrc"));
+        assert!(!prompt.contains(".husky"));
+        assert!(!prompt.contains("CONTRIBUTING.md"));
     }
 
     #[test]
@@ -1065,9 +1064,11 @@ mod tests {
         )
         .unwrap();
 
-        assert!(prompt.contains("commit 規約"));
         assert!(prompt.contains("`gh pr create`"));
+        assert!(prompt.contains("commit-msg hook"));
+        assert!(prompt.contains("--no-verify"));
         assert!(!prompt.contains("finalize agent"));
+        assert!(!prompt.contains(".commitlintrc"));
     }
 
     #[test]
@@ -1251,16 +1252,20 @@ mod tests {
 
         assert!(prompt.contains("https://github.com/o/r/issues/13"));
         assert!(prompt.contains("develop/issue-13-some-work-20260430"));
-        assert!(prompt.contains(".commitlintrc"));
-        assert!(prompt.contains("CONTRIBUTING.md"));
         assert!(prompt.contains("`Closes https://github.com/o/r/issues/13`"));
-        assert!(prompt.contains("gh pr create --repo o/r --head develop/issue-13"));
+        assert!(prompt.contains("gh pr create"));
+        assert!(prompt.contains("o/r"));
         assert!(prompt.contains("--no-verify"));
-        assert!(prompt.contains("`gh pr create --base main`"));
+        assert!(prompt.contains("base を `main`"));
+        assert!(prompt.contains("commit-msg hook"));
+        // No hardcoded enumeration of commit-rule sources.
+        assert!(!prompt.contains(".commitlintrc"));
+        assert!(!prompt.contains(".husky"));
+        assert!(!prompt.contains("CONTRIBUTING.md"));
     }
 
     #[test]
-    fn finalize_prompt_omits_base_line_when_unspecified() {
+    fn finalize_prompt_omits_base_sentence_when_unspecified() {
         let ctx = PublishContext {
             issue_url: "https://github.com/o/r/issues/9".to_string(),
             issue_number: 9,
@@ -1274,7 +1279,7 @@ mod tests {
 
         let prompt = build_finalize_prompt(&ctx, false, true);
 
-        assert!(!prompt.contains("base branch:"));
+        assert!(!prompt.contains("base を"));
         assert!(prompt.contains("未 push の commit"));
     }
 }
