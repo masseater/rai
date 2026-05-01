@@ -448,6 +448,7 @@ dependencies = [
  "rai-cmd-issue",
  "rai-cmd-pair",
  "rai-cmd-pr",
+ "rai-cmd-repeat",
  "rai-core",
 ]
 
@@ -588,6 +589,15 @@ dependencies = [
  "rai-core",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "rai-cmd-repeat"
+version = "0.1.14"
+dependencies = [
+ "anyhow",
+ "clap",
+ "rai-core",
 ]
 
 [[package]]

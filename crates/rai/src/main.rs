@@ -53,6 +53,8 @@ enum Cmd {
     Completion(rai_cmd_completion::Cmd),
     /// rai が依存している外部 CLI が揃っているかを診断する。
     Doctor(rai_cmd_doctor::Cmd),
+    /// 任意のシェルコマンドを回数 / 経過時間でループ実行する。
+    Repeat(rai_cmd_repeat::Cmd),
 }
 
 impl Run for Cmd {
@@ -71,6 +73,7 @@ impl Run for Cmd {
             Cmd::Conflicts(c) => c.run(ctx),
             Cmd::Completion(c) => c.print(&mut Cli::command()),
             Cmd::Doctor(c) => c.run(ctx),
+            Cmd::Repeat(c) => c.run(ctx),
         }
     }
 }
