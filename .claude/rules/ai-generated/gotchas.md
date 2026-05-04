@@ -78,8 +78,17 @@ worktree でコンフリクト解消 / CI 修正を agent CLI に任せるため
   テンプレも、ルールファイルのリストも復活させない。
 - `finalize::Cmd` は `--engine-cmd` と `--permission-mode` を `build_finalize_command`
   経由で受け取る。新しい engine 関連フラグを `AgentArgs` に追加するときは、
-  `issue::build_finalize_command` / `pr::build_finalize_command` と `finalize::Cmd`
-  にも忘れず通すこと。
+  `issue::build_finalize_command` / `pr::build_finalize_command` /
+  `resume::build_finalize_command` と `finalize::Cmd` にも忘れず通すこと。
+- `rai develop resume <ISSUE|PR>` は **既存 worktree を破壊しない**。`develop issue` /
+  `develop pr` の `ensure_worktree` は `git reset --hard` + `git clean -fd` +
+  `git pull --rebase` を実行するが、resume はその逆で、未コミットの変更や
+  rebase 中の状態を保持したまま新しい tmux セッションだけ立て直す。issue 系は
+  `git for-each-ref refs/heads/develop/issue-<N>-*` で worktree branch を列挙し、
+  複数あれば fzf で選ばせる。pr 系は PR の `headRefName` をそのまま branch と
+  して扱う。worktree が見つからない場合は明示エラーで終わる (新規作成は
+  `develop issue` の責務)。`common::find_existing_worktree` は **refresh しない**
+  ヘルパで、resume だけが使う。新規作成パス (`ensure_worktree`) と混同しない。
 - `rai develop pr` は同一リポジトリ PR 専用。fork 由来 PR (`headRepositoryOwner` が
   base owner と異なる) は明示エラーで弾く。fork 対応は将来課題。
 - 既存 worktree が見つかったときは `git reset --hard HEAD` + `git clean -fd` +

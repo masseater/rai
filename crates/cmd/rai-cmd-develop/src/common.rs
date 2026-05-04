@@ -338,6 +338,34 @@ pub fn gwq_get(branch: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(s))
 }
 
+/// `develop resume` 用。既存 worktree のパスを取り出すだけで、`git reset` 等の
+/// 破壊的な refresh は **行わない**。`ensure_worktree` と違って、見つからない
+/// 場合は新規作成も試みずにエラーで終わる。
+pub fn find_existing_worktree(branch: &str) -> Result<Worktree> {
+    let path =
+        gwq_get(branch).with_context(|| format!("no existing worktree for branch `{branch}`"))?;
+    Ok(Worktree {
+        path,
+        created: false,
+    })
+}
+
+/// `develop/issue-<N>-*` パターンに合致するローカル branch を列挙する。
+/// `develop resume` で issue 番号から worktree を探すために使う。
+pub fn issue_branches_for(number: u64) -> Result<Vec<String>> {
+    let pattern = format!("refs/heads/develop/issue-{number}-*");
+    let raw = match git_capture(&["for-each-ref", "--format=%(refname:short)", &pattern]) {
+        Ok(s) => s,
+        Err(_) => return Ok(Vec::new()),
+    };
+    Ok(raw
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
 pub fn gwq_add_new_branch(branch: &str) -> Result<PathBuf> {
     let st = shell::user_shell_argv(&["gwq", "add", "-b", branch])
         .status()
