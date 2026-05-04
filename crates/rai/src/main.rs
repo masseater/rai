@@ -43,8 +43,10 @@ enum Cmd {
     Git(rai_cmd_git::Cmd),
     /// GitHub Pull Request 関連サブコマンド群。
     Pr(rai_cmd_pr::Cmd),
-    /// GitHub Issue を起点に worktree + tmux + agent を起動する。
+    /// GitHub Issue サブコマンド群 (棚卸し・triage 等)。
     Issue(rai_cmd_issue::Cmd),
+    /// Issue / PR を起点に worktree + tmux + agent を起動する。
+    Develop(rai_cmd_develop::Cmd),
     /// gwq worktree のお掃除サブコマンド群。
     Gwq(rai_cmd_gwq::Cmd),
     /// CONFLICTING な PR を agent CLI で自動解消する長時間バッチ。
@@ -69,6 +71,7 @@ impl Run for Cmd {
             Cmd::Git(c) => c.run(ctx),
             Cmd::Pr(c) => c.run(ctx),
             Cmd::Issue(c) => c.run(ctx),
+            Cmd::Develop(c) => c.run(ctx),
             Cmd::Gwq(c) => c.run(ctx),
             Cmd::Conflicts(c) => c.run(ctx),
             Cmd::Completion(c) => c.print(&mut Cli::command()),

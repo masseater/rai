@@ -34,19 +34,32 @@ cargo install --path crates/rai
 | `rai dev`        | Pick a repo / worktree via `ghq` + `gwq` + `fzf`.                 |
 | `rai git`        | Git utility subcommands (autopull, track-mine, …).                |
 | `rai pr`         | GitHub Pull Request helpers.                                      |
-| `rai issue`      | Develop from Issues, inventory with an agent, and triage results.  |
+| `rai issue`      | Inventory Issues with an agent and triage results.                |
+| `rai develop`    | Develop from an Issue or rescue an existing PR (conflict / CI fix).|
 | `rai gwq`        | gwq worktree cleanup helpers.                                     |
 | `rai conflicts`  | Long-running batch that resolves CONFLICTING PRs via an agent.    |
 | `rai completion` | Emit a shell completion script (bash / zsh / fish / powershell / elvish). |
 
 Run `rai <subcommand> --help` for details on each.
 
-### Migrating issue workflow
+### Develop / rescue workflow
 
-If you previously used the fish function, point it at the `develop` subcommand:
+Spawn an agent in a dedicated worktree + tmux session for either a fresh Issue
+or an in-flight PR:
+
+```sh
+# Develop a GitHub Issue end-to-end (worktree, tmux, agent, finalize → PR).
+rai develop issue <ISSUE_URL_OR_NUMBER>
+
+# Rescue an existing PR (resolve conflicts and/or fix failing CI).
+rai develop pr <PR_URL_OR_NUMBER>
+```
+
+If you previously used the fish function for the issue flow, point it at the
+new subcommand:
 
 ```fish
-alias gh-issue-fix 'rai issue develop'
+alias gh-issue-fix 'rai develop issue'
 ```
 
 To inventory Issues without letting the AI fetch them, have `rai` collect the

@@ -1,0 +1,361 @@
+//! `rai develop issue` — Issue を起点に worktree + tmux + agent を起動する。
+
+use anyhow::{bail, Context};
+use chrono::Local;
+use clap::Args;
+use rai_core::{cli::Run, shell, Ctx, Result};
+use serde::Deserialize;
+
+use crate::common::{self, gh_capture, gwq_add_new_branch, AgentArgs, Flavor, LaunchContext};
+use crate::finalize;
+
+#[derive(Debug, Args)]
+pub struct Cmd {
+    /// Issue 識別子: 番号 / URL / 省略 (省略時は fzf 複数選択)。
+    #[arg(value_name = "ISSUE")]
+    issue: Vec<String>,
+
+    /// `OWNER/REPO` を上書き。
+    #[arg(long, value_name = "OWNER/REPO")]
+    repo: Option<String>,
+
+    /// ブランチ名を直接指定。未指定なら slug から自動生成。
+    #[arg(long, short = 'b')]
+    branch: Option<String>,
+
+    /// 自動作成する PR の base branch。
+    #[arg(long, value_name = "BRANCH")]
+    pr_base: Option<String>,
+
+    #[command(flatten)]
+    agent: AgentArgs,
+}
+
+#[derive(Debug)]
+struct Issue {
+    owner: String,
+    repo: String,
+    number: u64,
+    title: String,
+    url: String,
+}
+
+impl Run for Cmd {
+    fn run(self, _ctx: &Ctx) -> Result<()> {
+        if self.issue.len() > 1 && self.branch.is_some() {
+            bail!("--branch can only be used with a single issue");
+        }
+
+        let issues = resolve_issues(&self)?;
+        if issues.len() > 1 && self.branch.is_some() {
+            bail!("--branch can only be used with a single issue");
+        }
+
+        for issue in issues {
+            run_one(&self, &issue)?;
+        }
+
+        Ok(())
+    }
+}
+
+fn run_one(cmd: &Cmd, issue: &Issue) -> Result<()> {
+    eprintln!("issue: {}", issue.url);
+
+    let branch = match &cmd.branch {
+        Some(b) => b.clone(),
+        None => default_branch(&issue.title, issue.number),
+    };
+    eprintln!("branch: {branch}");
+
+    let wt = common::ensure_worktree(&branch, gwq_add_new_branch)?;
+    eprintln!("worktree: {}", wt.path.display());
+
+    let prompt = build_prompt(
+        cmd.agent.prompt_template.as_deref(),
+        &issue.url,
+        &issue.title,
+        !cmd.agent.no_auto_publish,
+    )?;
+
+    let (_shell_path, shell_kind) = shell::detect_user_shell();
+    let finalizer = if cmd.agent.no_auto_publish {
+        None
+    } else {
+        Some(build_finalize_command(cmd, issue, &branch, shell_kind)?)
+    };
+
+    common::launch(
+        &LaunchContext {
+            repo: &issue.repo,
+            branch: &branch,
+            flavor: Flavor::Issue,
+            number: issue.number,
+            prompt: &prompt,
+            finalizer: finalizer.as_deref(),
+            agent: &cmd.agent,
+        },
+        &wt,
+    )
+}
+
+fn resolve_issues(cmd: &Cmd) -> Result<Vec<Issue>> {
+    if !cmd.issue.is_empty() {
+        let mut issues = Vec::with_capacity(cmd.issue.len());
+        for arg in &cmd.issue {
+            issues.push(resolve_issue_arg(cmd, arg)?);
+        }
+        return Ok(issues);
+    }
+
+    let (o, r) = common::resolve_repo(cmd.repo.as_deref())?;
+    let json = gh_capture(&[
+        "issue",
+        "list",
+        "--repo",
+        &format!("{o}/{r}"),
+        "--state",
+        "open",
+        "--limit",
+        "50",
+        "--json",
+        "number,title",
+    ])?;
+    #[derive(Deserialize)]
+    struct Item {
+        number: u64,
+        title: String,
+    }
+    let items: Vec<Item> =
+        serde_json::from_str(&json).context("failed to parse `gh issue list` JSON")?;
+    if items.is_empty() {
+        bail!("no open issues found");
+    }
+    let selected = common::pick_with_fzf(items.into_iter().map(|it| (it.number, it.title)))?;
+    Ok(selected
+        .into_iter()
+        .map(|(n, title)| Issue {
+            owner: o.clone(),
+            repo: r.clone(),
+            number: n,
+            title,
+            url: format!("https://github.com/{o}/{r}/issues/{n}"),
+        })
+        .collect())
+}
+
+fn resolve_issue_arg(cmd: &Cmd, arg: &str) -> Result<Issue> {
+    if let Some((o, r, n)) = parse_issue_url(arg) {
+        let title = fetch_title(&o, &r, n)?;
+        let url = format!("https://github.com/{o}/{r}/issues/{n}");
+        return Ok(Issue {
+            owner: o,
+            repo: r,
+            number: n,
+            title,
+            url,
+        });
+    }
+    if let Ok(n) = arg.parse::<u64>() {
+        let (o, r) = common::resolve_repo(cmd.repo.as_deref())?;
+        let title = fetch_title(&o, &r, n)?;
+        let url = format!("https://github.com/{o}/{r}/issues/{n}");
+        return Ok(Issue {
+            owner: o,
+            repo: r,
+            number: n,
+            title,
+            url,
+        });
+    }
+    bail!("invalid issue identifier: {arg}");
+}
+
+fn parse_issue_url(s: &str) -> Option<(String, String, u64)> {
+    let stripped = s
+        .strip_prefix("https://github.com/")
+        .or_else(|| s.strip_prefix("http://github.com/"))?;
+    let mut it = stripped.split('/');
+    let owner = it.next()?.to_string();
+    let repo = it.next()?.to_string();
+    if it.next()? != "issues" {
+        return None;
+    }
+    let n: u64 = it.next()?.parse().ok()?;
+    Some((owner, repo, n))
+}
+
+fn fetch_title(owner: &str, repo: &str, number: u64) -> Result<String> {
+    let json = gh_capture(&[
+        "issue",
+        "view",
+        &number.to_string(),
+        "--repo",
+        &format!("{owner}/{repo}"),
+        "--json",
+        "title",
+    ])?;
+    #[derive(Deserialize)]
+    struct V {
+        title: String,
+    }
+    let v: V = serde_json::from_str(&json).context("failed to parse `gh issue view` JSON")?;
+    Ok(v.title)
+}
+
+fn default_branch(title: &str, number: u64) -> String {
+    let slug = slugify(title);
+    let ts = Local::now().format("%Y%m%d-%H%M%S");
+    if slug.is_empty() {
+        format!("develop/issue-{number}-{ts}")
+    } else {
+        format!("develop/issue-{number}-{slug}-{ts}")
+    }
+}
+
+fn slugify(title: &str) -> String {
+    let lower = title.to_lowercase();
+    let mut out = String::new();
+    let mut prev_dash = true;
+    for c in lower.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    let trimmed = out.trim_matches('-').to_string();
+    trimmed
+        .chars()
+        .take(40)
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
+}
+
+fn build_prompt(
+    template: Option<&std::path::Path>,
+    url: &str,
+    title: &str,
+    auto_publish: bool,
+) -> Result<String> {
+    if let Some(p) = template {
+        let body = common::read_prompt_template(p)?;
+        return Ok(body
+            .replace("{ISSUE_URL}", url)
+            .replace("{ISSUE_TITLE}", title));
+    }
+    if auto_publish {
+        Ok(format!(
+            "GitHub Issue {url} (`{title}`) を一気通貫で開発し、PR を出すところまで自走してください。実装したらテスト・ビルド・lint をローカルで通し、commit して push し、`gh pr create` で PR を作成します。PR 本文には `Closes {url}` を含めてください。commit-msg hook がメッセージを弾いた場合はメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。万一あなたが PR まで辿り着かずに終了した場合の保険として、`rai develop` 側が finalize agent を起動して残りを引き取りますが、これはあくまで fallback なので、原則あなた自身で PR まで完了させてください。"
+        ))
+    } else {
+        Ok(format!(
+            "GitHub Issue {url} (`{title}`) を一気通貫で開発し、commit、push、`gh pr create` で PR を作成するところまで自走してください。テスト・ビルド・lint をローカルで通すこと。commit-msg hook がメッセージを弾いたらメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
+        ))
+    }
+}
+
+fn build_finalize_command(
+    cmd: &Cmd,
+    issue: &Issue,
+    branch: &str,
+    shell_kind: rai_core::shell::Shell,
+) -> Result<String> {
+    let exe = std::env::current_exe().context("failed to resolve current executable")?;
+    let q = shell::quote_for(shell_kind);
+    let mut parts = vec![
+        shell::quote_path(shell_kind, &exe),
+        "develop".to_string(),
+        "finalize-agent".to_string(),
+        "--flavor".to_string(),
+        "issue".to_string(),
+        "--url".to_string(),
+        q(&issue.url),
+        "--number".to_string(),
+        issue.number.to_string(),
+        "--title".to_string(),
+        q(&issue.title),
+        "--repo".to_string(),
+        q(&format!("{}/{}", issue.owner, issue.repo)),
+        "--branch".to_string(),
+        q(branch),
+        "--engine-cmd".to_string(),
+        q(&cmd.agent.engine_cmd),
+    ];
+    if let Some(mode) = cmd.agent.permission_mode {
+        parts.push("--permission-mode".to_string());
+        parts.push(mode.as_arg().to_string());
+    }
+    let pr_base = cmd
+        .pr_base
+        .clone()
+        .or_else(finalize::local_origin_head_branch);
+    if let Some(base) = pr_base.as_deref() {
+        parts.push("--pr-base".to_string());
+        parts.push(q(base));
+    }
+    Ok(parts.join(" "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_branch_uses_develop_issue_prefix() {
+        let branch = default_branch("Add issue workflow", 9);
+        assert!(branch.starts_with("develop/issue-9-add-issue-workflow-"));
+    }
+
+    #[test]
+    fn default_branch_without_slug_uses_develop_issue_prefix() {
+        let branch = default_branch("!!!", 9);
+        assert!(branch.starts_with("develop/issue-9-"));
+    }
+
+    #[test]
+    fn slugify_keeps_existing_rules() {
+        assert_eq!(
+            slugify("Hello, RAI issue develop!"),
+            "hello-rai-issue-develop"
+        );
+        assert_eq!(
+            slugify("abcdefghijklmnopqrstuvwxyz0123456789-extra"),
+            "abcdefghijklmnopqrstuvwxyz0123456789-ext"
+        );
+    }
+
+    #[test]
+    fn default_prompt_directs_agent_to_publish_with_finalize_as_fallback() {
+        let prompt = build_prompt(
+            None,
+            "https://github.com/o/r/issues/13",
+            "Auto publish",
+            true,
+        )
+        .unwrap();
+        assert!(prompt.contains("PR を出すところまで自走"));
+        assert!(prompt.contains("`gh pr create`"));
+        assert!(prompt.contains("Closes https://github.com/o/r/issues/13"));
+        assert!(prompt.contains("commit-msg hook"));
+        assert!(prompt.contains("--no-verify"));
+        assert!(prompt.contains("finalize agent"));
+        assert!(prompt.contains("fallback"));
+    }
+
+    #[test]
+    fn default_prompt_when_auto_publish_disabled() {
+        let prompt = build_prompt(
+            None,
+            "https://github.com/o/r/issues/13",
+            "Manual publish",
+            false,
+        )
+        .unwrap();
+        assert!(prompt.contains("`gh pr create`"));
+        assert!(!prompt.contains("finalize agent"));
+    }
+}

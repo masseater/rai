@@ -440,6 +440,7 @@ dependencies = [
  "rai-cmd-conflicts",
  "rai-cmd-date",
  "rai-cmd-dev",
+ "rai-cmd-develop",
  "rai-cmd-doctor",
  "rai-cmd-gh",
  "rai-cmd-git",
@@ -503,6 +504,18 @@ dependencies = [
  "anyhow",
  "clap",
  "rai-core",
+]
+
+[[package]]
+name = "rai-cmd-develop"
+version = "0.1.16"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "rai-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -26,6 +26,7 @@ rai-cmd-dev = { path = "crates/cmd/rai-cmd-dev", version = "0.1.0" }
 rai-cmd-git = { path = "crates/cmd/rai-cmd-git", version = "0.1.0" }
 rai-cmd-pr = { path = "crates/cmd/rai-cmd-pr", version = "0.1.0" }
 rai-cmd-issue = { path = "crates/cmd/rai-cmd-issue", version = "0.1.0" }
+rai-cmd-develop = { path = "crates/cmd/rai-cmd-develop", version = "0.1.0" }
 rai-cmd-gwq = { path = "crates/cmd/rai-cmd-gwq", version = "0.1.0" }
 rai-cmd-conflicts = { path = "crates/cmd/rai-cmd-conflicts", version = "0.1.0" }
 rai-cmd-completion = { path = "crates/cmd/rai-cmd-completion", version = "0.1.0" }

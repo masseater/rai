@@ -1,9 +1,8 @@
-//! `rai issue` — GitHub Issue を起点にした開発支援サブコマンド群。
+//! `rai issue` — GitHub Issue 操作系のサブコマンド群 (inventory / triage)。
 //!
-//! 仕様: `docs/specs/09-issue-develop.md`, `docs/specs/13-issue-inventory.md`,
-//! `docs/specs/15-issue-triage.md` 参照。
+//! 仕様: `docs/specs/13-issue-inventory.md`, `docs/specs/15-issue-triage.md`。
+//! `rai issue develop` は `rai develop issue` に移行した (`docs/specs/18-develop.md`)。
 
-pub mod develop;
 pub mod inventory;
 pub mod triage;
 
@@ -21,11 +20,6 @@ pub struct Cmd {
 
 #[derive(Debug, Subcommand)]
 enum IssueCmd {
-    /// Issue から worktree + tmux + agent CLI を一気通貫で起動する。
-    Develop(develop::Cmd),
-    /// Internal post-agent publish hook for `rai issue develop`.
-    #[command(name = "finalize-agent", hide = true)]
-    FinalizeAgent(develop::FinalizeCmd),
     /// Issue 一覧を取得し、固定 prompt で AI engine に棚卸しさせる。
     Inventory(inventory::Cmd),
     /// triage ラベル付き Issue を 1 件ずつレビューし、close/keep を判断する。
@@ -35,8 +29,6 @@ enum IssueCmd {
 impl Run for Cmd {
     fn run(self, ctx: &Ctx) -> Result<()> {
         match self.sub {
-            IssueCmd::Develop(c) => c.run(ctx),
-            IssueCmd::FinalizeAgent(c) => c.run(ctx),
             IssueCmd::Inventory(c) => c.run(ctx),
             IssueCmd::Triage(c) => c.run(ctx),
         }
