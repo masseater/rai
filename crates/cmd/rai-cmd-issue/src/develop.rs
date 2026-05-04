@@ -232,7 +232,7 @@ fn run_one(cmd: &Cmd, issue: &Issue) -> Result<()> {
     }
 
     let ts = Local::now().format("%Y%m%d-%H%M%S");
-    let session = format!("gwq-run-issue-{}-{ts}", issue.number);
+    let session = format!("{}-issue-{}-{ts}", issue.repo, issue.number);
     let log_path = engine_log_path(&session)?;
     let wrapped_cmd = wrap_with_log(&full_cmd, &log_path, shell_kind);
 

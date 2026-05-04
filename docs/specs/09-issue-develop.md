@@ -34,7 +34,7 @@ GitHub Issue を起点に、専用の git worktree (`gwq`) と tmux session を�
     現在の `rai` バイナリ絶対パスへ置換する。プレースホルダを 1 つも含まない場合は legacy 互換で
     末尾に `--permission-mode <MODE>` と prompt を append する。
   - prompt は `--prompt-template FILE` でファイルから読める。
-  - `tmux new-session -d -s gwq-run-issue-<N>-<ts> -c <wt-path> <full_cmd>` で起動。
+  - `tmux new-session -d -s <repo>-issue-<N>-<ts> -c <wt-path> <full_cmd>` で起動。
     `<full_cmd>` は `set -o pipefail; (...)` で囲み、パイプライン途中の失敗を取り逃さないようにする。
   - 複数 Issue 選択時は Issue ごとに worktree と tmux session を作成する。
   - `--no-tmux` で tmux を介さず前面実行 (デバッグ用)。
@@ -67,7 +67,7 @@ GitHub Issue を起点に、専用の git worktree (`gwq`) と tmux session を�
 - [ ] 複数 Issue 指定時に `--branch` を使うとエラーになる。
 - [ ] branch 名生成が現行 fish 版と一致 (slug 規則, ts 形式)。
 - [ ] gwq existing 時の attach / force-recreate / abort が動く。
-- [ ] tmux session が `gwq-run-issue-<N>-<ts>` で立ち上がり、`-c` で worktree path に cd される。
+- [ ] tmux session が `<repo>-issue-<N>-<ts>` で立ち上がり、`-c` で worktree path に cd される。
 - [ ] agent 正常終了後に未コミット変更または未 push commit があれば、rai が finalize agent を
       起動する。finalize agent は commit / push / `gh pr create` を実施する。commit メッセージや
       PR タイトルは commit-msg hook の発火に任せる前提で、rai 側ではハードコードしない。
