@@ -53,6 +53,14 @@ rai develop issue <ISSUE_URL_OR_NUMBER>
 
 # Rescue an existing PR (resolve conflicts and/or fix failing CI).
 rai develop pr <PR_URL_OR_NUMBER>
+
+# Resume a session that died mid-flight (rate limit, context limit, ...).
+# Re-attaches to the existing worktree without `git reset` / `git pull` so any
+# in-progress work is preserved, then launches a fresh tmux + agent that picks
+# up from `git status` / `git log`.
+rai develop resume <ISSUE_URL_OR_NUMBER>          # default: --flavor issue
+rai develop resume <PR_URL>                       # auto-detected as --flavor pr
+rai develop resume <NUMBER> --flavor pr           # numeric form needs --flavor
 ```
 
 If you previously used the fish function for the issue flow, point it at the
