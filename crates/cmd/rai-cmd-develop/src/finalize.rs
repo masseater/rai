@@ -1,4 +1,4 @@
-//! `rai develop finalize-agent` — agent 完走後の commit / push / PR 作成 (or push) を引き取る。
+//! `rai develop finalize-agent` — agent 完走後の commit / push / PR 作成 (or push) を仕上げる。
 
 use anyhow::{bail, Context};
 use clap::Args;
@@ -123,7 +123,7 @@ fn build_finalize_prompt(ctx: &Cmd, has_local: bool, has_commits: bool) -> Strin
                 None => String::new(),
             };
             format!(
-                "GitHub Issue {url} (`{title}`) の作業を引き取って commit、push、PR の作成まで仕上げてください。\
+                "GitHub Issue {url} (`{title}`) の現在の作業状態を確認し、commit、push、PR の作成まで仕上げてください。\
 worktree のブランチは `{branch}` で、現在 {state}。\
 未コミット変更があれば論理的な単位で commit し、`git push -u origin HEAD:{branch}` で push したあと、\
 リポジトリ `{repo}` に対して `gh pr create` で PR を作成してください。本文には `Closes {url}` を含めること。\
@@ -139,7 +139,7 @@ commit-msg hook がメッセージを弾いた場合はメッセージを直し�
             )
         }
         Flavor::Pr => format!(
-            "GitHub PR {url} (`{title}`) の作業を引き取って commit、push まで仕上げてください。\
+            "GitHub PR {url} (`{title}`) の現在の作業状態を確認し、commit、push まで仕上げてください。\
 worktree のブランチは `{branch}` で、現在 {state}。\
 未コミット変更があれば論理的な単位で commit し、`git push origin HEAD:{branch}` で同じ PR ブランチに push してください。\
 **新規 PR は作成しないでください**。既存 PR への追加 push が前提です。\

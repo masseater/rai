@@ -353,7 +353,7 @@ fn build_prompt(template: Option<&std::path::Path>, pr: &Pr) -> Result<String> {
         )
     } else {
         let mut sections = vec![format!(
-            "PR {url} (`{title}`) を引き取り、以下を実施してください:",
+            "PR {url} (`{title}`) について、以下を実施してください:",
             url = pr.url,
             title = pr.title
         )];

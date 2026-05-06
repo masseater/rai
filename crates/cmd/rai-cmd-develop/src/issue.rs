@@ -249,7 +249,7 @@ fn build_prompt(
     }
     if auto_publish {
         Ok(format!(
-            "GitHub Issue {url} (`{title}`) を一気通貫で開発し、PR を出すところまで自走してください。実装したらテスト・ビルド・lint をローカルで通し、commit して push し、`gh pr create` で PR を作成します。PR 本文には `Closes {url}` を含めてください。commit-msg hook がメッセージを弾いた場合はメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。万一あなたが PR まで辿り着かずに終了した場合の保険として、`rai develop` 側が finalize agent を起動して残りを引き取りますが、これはあくまで fallback なので、原則あなた自身で PR まで完了させてください。"
+            "GitHub Issue {url} (`{title}`) を一気通貫で開発し、PR を出すところまで自走してください。実装したらテスト・ビルド・lint をローカルで通し、commit して push し、`gh pr create` で PR を作成します。PR 本文には `Closes {url}` を含めてください。commit-msg hook がメッセージを弾いた場合はメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
         ))
     } else {
         Ok(format!(
@@ -329,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn default_prompt_directs_agent_to_publish_with_finalize_as_fallback() {
+    fn default_prompt_directs_agent_to_publish_without_handoff_language() {
         let prompt = build_prompt(
             None,
             "https://github.com/o/r/issues/13",
@@ -342,8 +342,7 @@ mod tests {
         assert!(prompt.contains("Closes https://github.com/o/r/issues/13"));
         assert!(prompt.contains("commit-msg hook"));
         assert!(prompt.contains("--no-verify"));
-        assert!(prompt.contains("finalize agent"));
-        assert!(prompt.contains("fallback"));
+        assert!(!prompt.contains("finalize agent"));
     }
 
     #[test]

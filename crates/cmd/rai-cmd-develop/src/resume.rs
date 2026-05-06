@@ -301,12 +301,7 @@ fn build_resume_prompt(target: &Target, auto_publish: bool) -> Result<String> {
     })
 }
 
-fn issue_resume_prompt(url: &str, title: &str, branch: &str, auto_publish: bool) -> String {
-    let fallback = if auto_publish {
-        " 万一あなたが PR まで辿り着かずに終了した場合の保険として、`rai develop` 側が finalize agent を起動して残りを引き取りますが、これはあくまで fallback なので、原則あなた自身で PR まで完了させてください。"
-    } else {
-        ""
-    };
+fn issue_resume_prompt(url: &str, title: &str, branch: &str, _auto_publish: bool) -> String {
     format!(
         "GitHub Issue {url} (`{title}`) の作業を **途中から** 再開してください。\
 worktree のブランチは `{branch}`。前回のセッションは rate limit / context limit / tmux 事故などで途中終了しています。\
@@ -314,7 +309,7 @@ worktree のブランチは `{branch}`。前回のセッションは rate limit 
 未コミット変更があれば論理的な単位で commit を整えながら、残作業を仕上げて PR を出すところまで完了させてください。\
 テスト・ビルド・lint をローカルで通し、commit & push、`gh pr create` で PR を作成 (PR 本文に `Closes {url}`)。\
 既に同じブランチへの PR があれば新規作成せず、追加 push のみ行ってください。\
-commit-msg hook がメッセージを弾いた場合はメッセージを直して再 commit してください。`--no-verify` 等の hook 回避は禁止です.{fallback}"
+commit-msg hook がメッセージを弾いた場合はメッセージを直して再 commit してください。`--no-verify` 等の hook 回避は禁止です。"
     )
 }
 
@@ -405,12 +400,11 @@ mod tests {
         assert!(p.contains("git log --oneline -20"));
         assert!(p.contains("Closes https://github.com/o/r/issues/9"));
         assert!(p.contains("--no-verify"));
-        assert!(p.contains("finalize agent"));
-        assert!(p.contains("fallback"));
+        assert!(!p.contains("finalize agent"));
     }
 
     #[test]
-    fn issue_resume_prompt_omits_finalize_fallback_when_disabled() {
+    fn issue_resume_prompt_omits_handoff_language_when_disabled() {
         let p = issue_resume_prompt(
             "https://github.com/o/r/issues/9",
             "Resume me",
@@ -418,7 +412,6 @@ mod tests {
             false,
         );
         assert!(!p.contains("finalize agent"));
-        assert!(!p.contains("fallback"));
     }
 
     #[test]
