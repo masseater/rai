@@ -294,18 +294,79 @@ pub fn ensure_worktree<F>(branch: &str, gwq_add: F) -> Result<Worktree>
 where
     F: FnOnce(&str) -> Result<PathBuf>,
 {
-    if let Ok(path) = gwq_get(branch) {
+    let wt = if let Ok(path) = gwq_get(branch) {
         eprintln!("rai: worktree for `{branch}` exists; resetting + pulling before work");
         refresh_existing_worktree(&path)?;
-        return Ok(Worktree {
+        Worktree {
             path,
             created: false,
-        });
+        }
+    } else {
+        let path = gwq_add(branch)?;
+        Worktree {
+            path,
+            created: true,
+        }
+    };
+    maybe_mise_install(&wt.path);
+    maybe_node_install(&wt.path);
+    Ok(wt)
+}
+
+/// worktree 直下に `mise.toml` / `.mise.toml` があれば `mise install` を流す。
+///
+/// mise 未インストールや install 失敗で worktree 作成自体を巻き戻すのは過剰なので、
+/// 失敗は stderr に通知するだけでエラー伝播はしない。
+fn maybe_mise_install(path: &Path) {
+    let candidates = ["mise.toml", ".mise.toml"];
+    if !candidates.iter().any(|name| path.join(name).exists()) {
+        return;
     }
-    gwq_add(branch).map(|path| Worktree {
-        path,
-        created: true,
-    })
+    eprintln!(
+        "rai: mise config detected at {}; running `mise install`",
+        path.display()
+    );
+    if let Err(e) = run_in(path, &["mise", "install"]) {
+        eprintln!("rai: `mise install` failed: {e}");
+    }
+}
+
+/// worktree 直下に `package.json` + lockfile があれば対応する package manager で
+/// 依存関係 install を流す。`mise install` の後に呼ぶことで mise 経由でインストール
+/// された node / pm を使える。
+///
+/// lockfile が見つからない `package.json` 単独の状態は skip する (どの pm を使う
+/// か rai 側で勝手に決めない)。失敗は mise と同じく stderr 通知のみ。
+fn maybe_node_install(path: &Path) {
+    if !path.join("package.json").exists() {
+        return;
+    }
+    let Some((pm, lockfile)) = detect_node_package_manager(path) else {
+        return;
+    };
+    eprintln!(
+        "rai: {lockfile} detected at {}; running `{pm} install`",
+        path.display()
+    );
+    if let Err(e) = run_in(path, &[pm, "install"]) {
+        eprintln!("rai: `{pm} install` failed: {e}");
+    }
+}
+
+/// lockfile を bun → pnpm → yarn → npm の順で検査し、最初にヒットした pm 名と
+/// lockfile 名を返す。bun は `bun.lock` (text) と `bun.lockb` (binary) の両方を見る。
+fn detect_node_package_manager(path: &Path) -> Option<(&'static str, &'static str)> {
+    const CANDIDATES: &[(&str, &str)] = &[
+        ("bun", "bun.lock"),
+        ("bun", "bun.lockb"),
+        ("pnpm", "pnpm-lock.yaml"),
+        ("yarn", "yarn.lock"),
+        ("npm", "package-lock.json"),
+    ];
+    CANDIDATES
+        .iter()
+        .find(|(_, lock)| path.join(lock).exists())
+        .map(|(pm, lock)| (*pm, *lock))
 }
 
 fn refresh_existing_worktree(path: &Path) -> Result<()> {
@@ -577,6 +638,44 @@ mod tests {
     fn flavor_label_matches_session_naming() {
         assert_eq!(Flavor::Issue.label(), "issue");
         assert_eq!(Flavor::Pr.label(), "pr");
+    }
+
+    #[test]
+    fn detect_node_package_manager_prefers_bun_then_pnpm_yarn_npm() {
+        use std::fs;
+        let tmp = std::env::temp_dir().join(format!("rai-pm-detect-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        // empty
+        assert!(detect_node_package_manager(&tmp).is_none());
+
+        // npm only
+        fs::write(tmp.join("package-lock.json"), "{}").unwrap();
+        assert_eq!(
+            detect_node_package_manager(&tmp),
+            Some(("npm", "package-lock.json"))
+        );
+
+        // yarn beats npm
+        fs::write(tmp.join("yarn.lock"), "").unwrap();
+        assert_eq!(
+            detect_node_package_manager(&tmp),
+            Some(("yarn", "yarn.lock"))
+        );
+
+        // pnpm beats yarn
+        fs::write(tmp.join("pnpm-lock.yaml"), "").unwrap();
+        assert_eq!(
+            detect_node_package_manager(&tmp),
+            Some(("pnpm", "pnpm-lock.yaml"))
+        );
+
+        // bun beats pnpm
+        fs::write(tmp.join("bun.lock"), "").unwrap();
+        assert_eq!(detect_node_package_manager(&tmp), Some(("bun", "bun.lock")));
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[test]

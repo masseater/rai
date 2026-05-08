@@ -24,6 +24,14 @@ GitHub の Issue / Pull Request を起点に、専用の git worktree (`gwq`) �
     `git clean -fd`, `git pull --rebase` を順に実行してから作業を開始する。
     対話プロンプト (attach / force-recreate / abort) は廃止する。
   - 新規時は `gwq add -b <branch>` (issue) もしくは `gwq add <branch>` (pr) で作成。
+  - worktree 確保後、直下に `mise.toml` または `.mise.toml` があれば `mise install` を流す。
+    新規・既存いずれの worktree でも実行する (`git pull --rebase` で mise 設定が更新される
+    ことがあるため)。`mise install` 失敗で worktree 作成自体は巻き戻さず、stderr 通知のみ。
+  - mise install の直後、worktree 直下に `package.json` があり lockfile も見つかれば、
+    対応する Node.js package manager で `<pm> install` を流す。lockfile 検出順は
+    `bun.lock` → `bun.lockb` → `pnpm-lock.yaml` → `yarn.lock` → `package-lock.json`。
+    package.json はあるが lockfile が無いケースは skip する (rai 側で pm を勝手に
+    選ばない)。install 失敗の扱いは mise と同じで stderr 通知のみ。
 - tmux session:
   - セッション名は `<repo>-<flavor>-<N>-<YYYYMMDD-HHMMSS>` (`<flavor>` は `issue` / `pr`)。
   - `tmux new-session -d -s <session> -c <wt-path> <full_cmd>` で起動。
