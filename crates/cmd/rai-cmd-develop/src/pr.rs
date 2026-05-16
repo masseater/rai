@@ -130,7 +130,15 @@ fn ensure_local_branch_tracking_origin(branch: &str) -> Result<()> {
     // が試みられる。upstream 未設定の場合は `git pull --rebase` が
     // `fatal: no tracking information` で非ゼロ終了し、エラーがユーザーに伝搬される
     // (= サイレントに整合性を失わない fail-safe な挙動)。
+    // ただし「fetch が失敗して既存ブランチで続行する」事実そのものは、ユーザーに
+    // 気付かれずに既存 commit を rebase 先に使ってしまうリスクがあるので、stderr に
+    // 警告だけは出す。
     if local_branch_exists(branch)? {
+        eprintln!(
+            "rai: warning — `git fetch origin {refspec}` failed; \
+             continuing with the existing local branch `{branch}` \
+             (worktree setup will run `git pull --rebase` to reconcile)."
+        );
         return Ok(());
     }
     bail!(

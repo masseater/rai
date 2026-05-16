@@ -199,7 +199,10 @@ fn build_fish_agent_block(agent: &str, finalizer: Option<&str>) -> String {
     // ではなく `set -g` で global にする (begin..end は scope boundary)。`set -g` の
     // 初期化はブロックの **外側** に置く。
     let init = "set -g __rai_agent_status 0";
-    let capture_inside = "set -l __rai_pipe $pipestatus; for s in $__rai_pipe; if test $s -ne 0; set -g __rai_agent_status $s; end; end";
+    // AGENTS.md / gotchas.md は「最悪値 (= 最大の exit code)」を採用するよう要求して
+    // いる。「最後の非ゼロ値」だと pipeline = [127, 0, 1] のときに 1 が残ってしまい、
+    // 致命度の高い 127 (= command not found) を取りこぼす。`-gt` で MAX を選ぶ。
+    let capture_inside = "set -l __rai_pipe $pipestatus; for s in $__rai_pipe; if test $s -gt $__rai_agent_status; set -g __rai_agent_status $s; end; end";
     let agent_block = format!("{init}; begin; {agent}; {capture_inside}; end");
     match finalizer {
         Some(finalizer) => format!(
@@ -454,6 +457,15 @@ fn refresh_existing_worktree(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `cwd` で外部コマンド (`argv`) を `$SHELL -c` 経由で実行する内部ヘルパ。
+///
+/// `argv` の各要素は `shell::user_shell_argv` でシェルクォートされるので、
+/// 単純文字列はもちろん **スペースやメタ文字を含む値** も安全に渡せる。
+/// ただし `argv` の要素はそれぞれ「単一の argv」として扱われる前提で、
+/// `argv = &["git rebase --abort"]` のように 1 要素にスペース区切りで詰めると、
+/// その全体が単一トークンとしてクォートされて意図しない動作になる (= 「`git rebase
+/// --abort` という名前のコマンド」を探す)。必ず `&["git", "rebase", "--abort"]` の
+/// 形で渡すこと。
 fn run_in(cwd: &Path, argv: &[&str]) -> Result<()> {
     let st = shell::user_shell_argv(argv)
         .current_dir(cwd)
@@ -470,8 +482,19 @@ pub fn gwq_get(branch: &str) -> Result<PathBuf> {
     if !out.status.success() {
         bail!("gwq get {branch} not found");
     }
+    // `from_utf8_lossy` で U+FFFD 置換が起きるとパス比較が壊れるが、ここでバイト列を
+    // 受けても呼び出し側 (`PathBuf::from`) が `Path::new(str)` を期待しているので、
+    // lossy 変換は維持する。代わりに、得られたパスが実在するかを検証して、置換文字や
+    // ANSI エスケープ混入で発生した「偽のパス」を早期に弾く。
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    Ok(PathBuf::from(s))
+    let path = PathBuf::from(s);
+    if !path.exists() {
+        bail!(
+            "gwq get {branch} returned `{}`, but that path does not exist (gwq output may be malformed or stale)",
+            path.display()
+        );
+    }
+    Ok(path)
 }
 
 /// `develop resume` 用。既存 worktree のパスを取り出すだけで、`git reset` 等の
@@ -745,7 +768,7 @@ mod tests {
             "set -g __rai_agent_status 0; \
              begin; ccs c1 -- 'hello world' | '/opt/rai/rai' claude format; \
              set -l __rai_pipe $pipestatus; \
-             for s in $__rai_pipe; if test $s -ne 0; set -g __rai_agent_status $s; end; end; \
+             for s in $__rai_pipe; if test $s -gt $__rai_agent_status; set -g __rai_agent_status $s; end; end; \
              end; \
              if test $__rai_agent_status -ne 0; \
              echo \"rai: agent exited with status $__rai_agent_status; skip auto publish\" >&2; \
@@ -839,7 +862,7 @@ mod tests {
             "begin; set -g __rai_agent_status 0; \
              begin; ccs c1 -- 'hello world' | '/opt/rai/rai' claude format; \
              set -l __rai_pipe $pipestatus; \
-             for s in $__rai_pipe; if test $s -ne 0; set -g __rai_agent_status $s; end; end; \
+             for s in $__rai_pipe; if test $s -gt $__rai_agent_status; set -g __rai_agent_status $s; end; end; \
              end; \
              if test $__rai_agent_status -ne 0; \
              echo \"rai: agent exited with status $__rai_agent_status; skip auto publish\" >&2; \
