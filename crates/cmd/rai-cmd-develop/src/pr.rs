@@ -21,53 +21,8 @@ pub struct Cmd {
     agent: AgentArgs,
 }
 
-#[derive(Debug, Deserialize)]
-struct PrJson {
-    number: u64,
-    title: String,
-    url: String,
-    #[serde(rename = "headRefName")]
-    head_ref_name: String,
-    #[serde(rename = "baseRefName")]
-    base_ref_name: String,
-    #[serde(rename = "mergeable")]
-    mergeable: Option<String>,
-    #[serde(rename = "statusCheckRollup", default)]
-    status_check_rollup: Vec<StatusCheck>,
-    #[serde(rename = "headRepository")]
-    head_repository: Option<HeadRepo>,
-    #[serde(rename = "headRepositoryOwner")]
-    head_repository_owner: Option<HeadOwner>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HeadRepo {
-    name: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct HeadOwner {
-    login: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct StatusCheck {
-    /// CheckRun → name, StatusContext → context. どちらかが入る。
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    context: Option<String>,
-    /// CheckRun: conclusion (SUCCESS / FAILURE / ...)
-    /// StatusContext: state (SUCCESS / FAILURE / ERROR / PENDING)
-    #[serde(default)]
-    conclusion: Option<String>,
-    #[serde(default)]
-    state: Option<String>,
-    #[serde(rename = "detailsUrl", default)]
-    details_url: Option<String>,
-    #[serde(rename = "targetUrl", default)]
-    target_url: Option<String>,
-}
+// `gh pr view` JSON 型は `crate::gh_pr` に集約 (`resume.rs` と共有)。
+use crate::gh_pr::{PrJson, StatusCheck};
 
 #[derive(Debug)]
 struct Pr {
@@ -144,10 +99,11 @@ fn run_one(cmd: &Cmd, pr: &Pr) -> Result<()> {
 }
 
 fn is_fork(pr: &Pr, base_owner: &str) -> bool {
-    match (&pr.head_owner, &pr.head_repo) {
-        (Some(owner), Some(_)) => owner != base_owner,
-        _ => false,
-    }
+    crate::gh_pr::is_fork(
+        pr.head_owner.as_deref(),
+        pr.head_repo.as_deref(),
+        base_owner,
+    )
 }
 
 fn ensure_local_branch_tracking_origin(branch: &str) -> Result<()> {

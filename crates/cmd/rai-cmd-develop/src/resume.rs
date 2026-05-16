@@ -234,30 +234,8 @@ fn fetch_issue_title(owner: &str, repo: &str, number: u64) -> Result<String> {
     Ok(v.title)
 }
 
-#[derive(Debug, Deserialize)]
-struct PrJson {
-    number: u64,
-    title: String,
-    url: String,
-    #[serde(rename = "headRefName")]
-    head_ref_name: String,
-    #[serde(rename = "baseRefName")]
-    base_ref_name: String,
-    #[serde(rename = "headRepository")]
-    head_repository: Option<HeadRepo>,
-    #[serde(rename = "headRepositoryOwner")]
-    head_repository_owner: Option<HeadOwner>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HeadRepo {
-    name: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct HeadOwner {
-    login: String,
-}
+// JSON 形は `crate::gh_pr::PrJson` に集約 (pr.rs と共有)。ここでは PrLite に詰め替え。
+use crate::gh_pr::PrJson;
 
 #[derive(Debug)]
 struct PrLite {
@@ -272,10 +250,11 @@ struct PrLite {
 
 impl PrLite {
     fn is_fork(&self, base_owner: &str) -> bool {
-        match (&self.head_owner, &self.head_repo) {
-            (Some(owner), Some(_)) => owner != base_owner,
-            _ => false,
-        }
+        crate::gh_pr::is_fork(
+            self.head_owner.as_deref(),
+            self.head_repo.as_deref(),
+            base_owner,
+        )
     }
 }
 

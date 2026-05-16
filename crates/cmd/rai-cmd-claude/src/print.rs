@@ -235,8 +235,13 @@ fn execute_in_tmux(argv: &[String], marker_dir: &Path, session_id: &str) -> Resu
     // `exec tail -f /dev/null` で pane を保持する。macOS の BSD `sleep` は
     // `infinity` を受け付けず即時 exit してしまうため (= pane が死んで session
     // ごと消える)、GNU 拡張に依らない `tail -f /dev/null` を使う。
+    //
+    // sentinel ファイルは `> file` の素朴なリダイレクトだと、ポーリング側が
+    // `O_TRUNC` 完了直後・write 前のタイミングで読むと空文字を見てしまう競合が
+    // ある。`<sentinel>.tmp` に書いてから `mv` で atomic に rename する。
+    let sentinel_tmp_q = shell::quote_posix(&format!("{sentinel_str}.tmp"));
     let script_body = format!(
-        "#!/bin/sh\nset +e\n{claude_cmdline}\n__rai_rc=$?\nprintf '%d' \"$__rai_rc\" > {sentinel_q}\nprintf '\\n--- rai claude print: claude exited rc=%d. tmux session preserved. ---\\n' \"$__rai_rc\"\nexec tail -f /dev/null\n",
+        "#!/bin/sh\nset +e\n{claude_cmdline}\n__rai_rc=$?\nprintf '%d' \"$__rai_rc\" > {sentinel_tmp_q}\nmv -f {sentinel_tmp_q} {sentinel_q}\nprintf '\\n--- rai claude print: claude exited rc=%d. tmux session preserved. ---\\n' \"$__rai_rc\"\nexec tail -f /dev/null\n",
         sentinel_q = shell::quote_posix(sentinel_str),
     );
     let script_path = marker_dir.join(format!("{session_id}.{ts_ns}.sh"));
