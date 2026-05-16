@@ -42,10 +42,8 @@ struct Issue {
 
 impl Run for Cmd {
     fn run(self, _ctx: &Ctx) -> Result<()> {
-        if self.issue.len() > 1 && self.branch.is_some() {
-            bail!("--branch can only be used with a single issue");
-        }
-
+        // `--branch` は単一 issue 専用。`resolve_issues` で CLI 引数からの複数指定と
+        // fzf 経由の複数選択を両方とも吸収するので、ここで一回チェックすれば十分。
         let issues = resolve_issues(&self)?;
         if issues.len() > 1 && self.branch.is_some() {
             bail!("--branch can only be used with a single issue");

@@ -206,11 +206,19 @@ fn existing_pr_url(branch: &str) -> Result<Option<String>> {
 
 fn cleanup_empty_worktree(branch: &str) {
     let safe_cwd = std::env::temp_dir();
-    let kill = shell::user_shell_argv(&["gwq", "tmux", "kill", branch])
+    // gwq remove と同じく、spawn 失敗と非ゼロ終了の両方を別個に報告する。kill 失敗は
+    // worktree 削除自体を止めない (tmux session が既に消えていて 0 以外で返るケースも
+    // あるため) が、ユーザーに何が起きたかは知らせる。
+    match shell::user_shell_argv(&["gwq", "tmux", "kill", branch])
         .current_dir(&safe_cwd)
-        .status();
-    if let Err(e) = kill {
-        eprintln!("rai: gwq tmux kill failed to spawn: {e}");
+        .status()
+    {
+        Ok(s) if s.success() => {}
+        Ok(s) => eprintln!(
+            "rai: gwq tmux kill exited with {:?}; proceeding to gwq remove",
+            s.code()
+        ),
+        Err(e) => eprintln!("rai: gwq tmux kill failed to spawn: {e}"),
     }
     let rm = shell::user_shell_argv(&["gwq", "remove", "--force", branch])
         .current_dir(&safe_cwd)

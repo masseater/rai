@@ -18,6 +18,22 @@ use serde::Deserialize;
 
 pub const DEFAULT_ENGINE_CMD: &str = "ccs c1 --print --output-format stream-json --verbose {PERMISSION_MODE} -- {PROMPT} | {RAI} claude format";
 
+/// ユーザーが対話 UI (fzf 等) で操作をキャンセルしたことを示すエラー型。
+/// `Result` の Err として返し、`rai` のトップレベルが downcast して exit 130 で
+/// 終了する。`std::process::exit` を直接呼ぶ実装は Result の destructors を
+/// 巻き戻さないため、ここでは `bail!(UserCancelled)` に倒して呼び出し側のクリーン
+/// アップを保証する。
+#[derive(Debug)]
+pub struct UserCancelled;
+
+impl std::fmt::Display for UserCancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("user cancelled")
+    }
+}
+
+impl std::error::Error for UserCancelled {}
+
 /// `rai develop {issue,pr}` 共通の agent 起動関連オプション。
 #[derive(Debug, Args, Clone)]
 pub struct AgentArgs {
@@ -165,13 +181,16 @@ pub fn build_agent_shell_command(
     shell_kind: Shell,
 ) -> String {
     let quote = shell::quote_for(shell_kind);
-    let has_placeholder = engine_cmd.contains("{PROMPT}") || engine_cmd.contains("{RAI}");
-    let agent = if has_placeholder {
-        engine_cmd
-            .replace("{PROMPT}", &quote(prompt))
-            .replace("{RAI}", &quote(rai_exe))
+    // `{PROMPT}` プレースホルダの有無だけで「テンプレ模式 vs legacy append 模式」を
+    // 切り替える。`{RAI}` は legacy append でも同じく置換しておく。以前は
+    // `{PROMPT} || {RAI}` のいずれかがあれば placeholder 模式に倒していたため、
+    // `--engine-cmd 'my-cmd {RAI}'` のような prompt を含まないテンプレートを与えると
+    // プロンプトが本文に入らないバグになっていた。
+    let with_rai = engine_cmd.replace("{RAI}", &quote(rai_exe));
+    let agent = if with_rai.contains("{PROMPT}") {
+        with_rai.replace("{PROMPT}", &quote(prompt))
     } else {
-        format!("{} {}", engine_cmd, quote(prompt))
+        format!("{} {}", with_rai, quote(prompt))
     };
     match shell_kind {
         Shell::Posix => build_posix_agent_block(&agent, finalizer),
@@ -239,7 +258,7 @@ pub fn launch(ctx: &LaunchContext, wt: &Worktree) -> Result<()> {
     let log_path = engine_log_path(&session)?;
     let wrapped_cmd = wrap_with_log(&full_cmd, &log_path, shell_kind);
 
-    let spawn = shell::user_shell_argv(&[
+    let spawn = match shell::user_shell_argv(&[
         "tmux",
         "new-session",
         "-d",
@@ -249,14 +268,16 @@ pub fn launch(ctx: &LaunchContext, wt: &Worktree) -> Result<()> {
         &wt.path.display().to_string(),
         &wrapped_cmd,
     ])
-    .status();
-    if let Err(e) = spawn {
-        if wt.created {
-            rollback_worktree(ctx.branch);
+    .status()
+    {
+        Ok(s) => s,
+        Err(e) => {
+            if wt.created {
+                rollback_worktree(ctx.branch);
+            }
+            return Err(anyhow::Error::new(e).context("failed to spawn tmux"));
         }
-        return Err(anyhow::Error::new(e).context("failed to spawn tmux"));
-    }
-    let spawn = spawn.unwrap();
+    };
     if !spawn.success() {
         if wt.created {
             rollback_worktree(ctx.branch);
@@ -549,7 +570,10 @@ pub fn pick_with_fzf(items: impl IntoIterator<Item = (u64, String)>) -> Result<V
     }
     let out = fzf.wait_with_output()?;
     if !out.status.success() {
-        std::process::exit(130);
+        // fzf を Esc / Ctrl-C で抜けた = ユーザーキャンセル。
+        // process::exit(130) を直接呼ぶ代わりに UserCancelled を返し、トップレベル
+        // で exit code に変換する (Result の destructors を巻き戻すため)。
+        return Err(anyhow::Error::new(UserCancelled));
     }
     let s = String::from_utf8_lossy(&out.stdout);
     parse_selected(&s)
@@ -561,7 +585,9 @@ fn parse_selected(s: &str) -> Result<Vec<(u64, String)>> {
         selected.push(parse_one(line)?);
     }
     if selected.is_empty() {
-        std::process::exit(130);
+        // fzf が success かつ stdout 空 = Enter だけで抜けたケース。これも
+        // ユーザーキャンセル扱い。
+        return Err(anyhow::Error::new(UserCancelled));
     }
     Ok(selected)
 }
@@ -609,6 +635,24 @@ mod tests {
         assert_eq!(
             cmd,
             "set -o pipefail; (ccs c1 --print -- 'hello world' | /opt/rai/rai claude format)"
+        );
+    }
+
+    #[test]
+    fn agent_shell_command_appends_prompt_when_template_has_only_rai_placeholder() {
+        // `{RAI}` だけを含み `{PROMPT}` を持たないテンプレートでも、プロンプトを
+        // append する legacy fallback に倒れることを確認する。以前は has_placeholder
+        // が true になる結果 prompt 本文が消える回帰があった。
+        let cmd = build_agent_shell_command(
+            "{RAI} claude format",
+            "hello world",
+            "/opt/rai/rai",
+            None,
+            Shell::Posix,
+        );
+        assert_eq!(
+            cmd,
+            "set -o pipefail; (/opt/rai/rai claude format 'hello world')"
         );
     }
 

@@ -85,5 +85,18 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     logging::init(cli.verbose);
     let ctx = Ctx::new();
-    cli.cmd.run(&ctx)
+    match cli.cmd.run(&ctx) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // 対話 UI でのキャンセル (fzf を Esc / Ctrl-C 等) は `UserCancelled` で
+            // 伝搬される。anyhow の error report は抑え、shell 慣習に揃えて exit 130
+            // で終了する。Result の destructors はここまでに正しく巻き戻されている。
+            if e.downcast_ref::<rai_cmd_develop::common::UserCancelled>()
+                .is_some()
+            {
+                std::process::exit(130);
+            }
+            Err(e)
+        }
+    }
 }
