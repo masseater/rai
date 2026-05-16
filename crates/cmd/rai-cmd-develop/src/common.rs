@@ -137,13 +137,17 @@ pub fn build_engine_cmd(engine_cmd: &str, permission_mode: Option<PermissionMode
         // `--verbose {PERMISSION_MODE} -- …` のようにプレースホルダの前後にスペースが
         // 入っているテンプレートで、permission_mode = None のとき素朴に空文字へ置換
         // すると `--verbose  -- …` のように二重スペースが残る。連続するスペースを
-        // 単一に正規化してから返す。
+        // 単一に正規化したうえで、行頭にプレースホルダがあった場合に残る先頭スペースも
+        // `trim_start` で取り除いてから返す (例: `{PERMISSION_MODE} ccs c1 -- …` で
+        // permission_mode=None なら ` ccs c1 -- …` → `ccs c1 -- …`)。
         let replaced = match permission_mode {
             Some(mode) => engine_cmd.replace(
                 "{PERMISSION_MODE}",
                 &format!("--permission-mode {}", mode.as_arg()),
             ),
-            None => collapse_spaces(&engine_cmd.replace("{PERMISSION_MODE}", "")),
+            None => collapse_spaces(&engine_cmd.replace("{PERMISSION_MODE}", ""))
+                .trim_start()
+                .to_string(),
         };
         return replaced;
     }
@@ -763,6 +767,16 @@ mod tests {
                 None,
             ),
             "ccs c1 --print --output-format stream-json --verbose -- {PROMPT}"
+        );
+    }
+
+    #[test]
+    fn build_engine_cmd_no_permission_mode_trims_leading_space_when_placeholder_is_first() {
+        // `{PERMISSION_MODE}` が行頭にあるユーザーテンプレートで permission_mode = None
+        // のとき、先頭にスペースが残らないこと。
+        assert_eq!(
+            build_engine_cmd("{PERMISSION_MODE} ccs c1 -- {PROMPT}", None),
+            "ccs c1 -- {PROMPT}"
         );
     }
 

@@ -294,9 +294,17 @@ mod tests {
     use super::*;
 
     fn sample(flavor: Flavor) -> Cmd {
+        // URL は flavor に合わせて issues / pull を切り替える。以前は両方で
+        // issues/13 を使っていたが、Pr 用ケースの期待値プロンプトに
+        // `https://github.com/o/r/issues/13` が embed されてしまい、テストが
+        // 「PR なのに Issue URL」という壊れた状態を fixate していた。
+        let url = match flavor {
+            Flavor::Issue => "https://github.com/o/r/issues/13".to_string(),
+            Flavor::Pr => "https://github.com/o/r/pull/13".to_string(),
+        };
         Cmd {
             flavor,
-            url: "https://github.com/o/r/issues/13".into(),
+            url,
             number: 13,
             title: "T".into(),
             repo: "o/r".into(),
@@ -323,7 +331,7 @@ mod tests {
         let p = build_finalize_prompt(&sample(Flavor::Pr), false, true);
         assert_eq!(
             p,
-            "GitHub PR https://github.com/o/r/issues/13 (`T`) の現在の作業状態を確認し、commit、push まで仕上げてください。worktree のブランチは `feat/x` で、現在 未 push の commit が残っています。未コミット変更があれば論理的な単位で commit し、`git push origin HEAD:feat/x` で同じ PR ブランチに push してください。**新規 PR は作成しないでください**。既存 PR への追加 push が前提です。commit-msg hook がメッセージを弾いた場合はメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
+            "GitHub PR https://github.com/o/r/pull/13 (`T`) の現在の作業状態を確認し、commit、push まで仕上げてください。worktree のブランチは `feat/x` で、現在 未 push の commit が残っています。未コミット変更があれば論理的な単位で commit し、`git push origin HEAD:feat/x` で同じ PR ブランチに push してください。**新規 PR は作成しないでください**。既存 PR への追加 push が前提です。commit-msg hook がメッセージを弾いた場合はメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
         );
     }
 }
