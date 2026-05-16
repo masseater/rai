@@ -24,7 +24,8 @@ GitHub の Issue / Pull Request を起点に、専用の git worktree (`gwq`) �
     `git clean -fd`, `git pull --rebase` を順に実行してから作業を開始する。
     対話プロンプト (attach / force-recreate / abort) は廃止する。
   - 新規時は `gwq add -b <branch>` (issue) もしくは `gwq add <branch>` (pr) で作成。
-  - worktree 確保後、直下に `mise.toml` または `.mise.toml` があれば `mise install` を流す。
+  - worktree 確保後、直下に `mise.toml` / `.mise.toml` / `.tool-versions` のいずれかが
+    あれば `mise install` を流す (`.tool-versions` は asdf 互換形式で mise も解釈する)。
     新規・既存いずれの worktree でも実行する (`git pull --rebase` で mise 設定が更新される
     ことがあるため)。`mise install` 失敗で worktree 作成自体は巻き戻さず、stderr 通知のみ。
   - mise install の直後、worktree 直下に `package.json` があり lockfile も見つかれば、

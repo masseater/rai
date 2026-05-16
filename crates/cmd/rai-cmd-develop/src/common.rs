@@ -225,6 +225,10 @@ pub fn engine_log_path(session: &str) -> Result<PathBuf> {
 }
 
 pub fn launch(ctx: &LaunchContext, wt: &Worktree) -> Result<()> {
+    // `run_one` 側でも `detect_user_shell()` を呼んでいるが、`$SHELL` の読み取りは
+    // プロセス内で値が変わらない (= 同じ結果が返る) ので 2 回呼んでも齟齬は出ない。
+    // ここで再取得しているのは、`launch` を `run_one` 以外から呼んだ場合や、将来
+    // `LaunchContext` に shell info を載せない設計判断を維持するため。
     let (shell_path, shell_kind) = shell::detect_user_shell();
     let exe = std::env::current_exe().context("failed to resolve current executable")?;
     let rai_exe = exe.display().to_string();
@@ -376,7 +380,9 @@ where
     Ok(wt)
 }
 
-/// worktree 直下に `mise.toml` / `.mise.toml` があれば `mise install` を流す。
+/// worktree 直下に `mise.toml` / `.mise.toml` / `.tool-versions` があれば
+/// `mise install` を流す。`.tool-versions` は asdf 互換形式で mise も同じファイルを
+/// 解釈するため、これだけ存在するリポジトリも検出対象に含める。
 ///
 /// mise 未インストールや install 失敗で worktree 作成自体を巻き戻すのは過剰なので、
 /// 失敗は stderr に通知するだけでエラー伝播はしない。
@@ -385,7 +391,7 @@ where
 /// 同じく実行する必要があるため (`docs/specs/18-develop.md` の「新規・既存いずれの
 /// worktree でも実行する」)。
 pub(crate) fn maybe_mise_install(path: &Path) {
-    let candidates = ["mise.toml", ".mise.toml"];
+    let candidates = ["mise.toml", ".mise.toml", ".tool-versions"];
     if !candidates.iter().any(|name| path.join(name).exists()) {
         return;
     }
@@ -850,9 +856,26 @@ mod tests {
     #[test]
     fn detect_node_package_manager_prefers_bun_then_pnpm_yarn_npm() {
         use std::fs;
-        let tmp = std::env::temp_dir().join(format!("rai-pm-detect-{}", std::process::id()));
+        // 並列テスト実行下でも一意になるよう PID + nanosecond + 関数名で命名する。
+        // 失敗時のクリーンアップは drop guard で行う。
+        let unique = format!(
+            "rai-pm-detect-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let tmp = std::env::temp_dir().join(unique);
+        struct CleanupGuard<'a>(&'a std::path::Path);
+        impl<'a> Drop for CleanupGuard<'a> {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(self.0);
+            }
+        }
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
+        let _guard = CleanupGuard(&tmp);
 
         // empty
         assert!(detect_node_package_manager(&tmp).is_none());

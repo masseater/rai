@@ -367,13 +367,16 @@ fn build_finalize_command(
         q(&pr.head_ref),
         "--engine-cmd".to_string(),
         q(&cmd.agent.engine_cmd),
-        "--pr-base".to_string(),
-        q(&pr.base_ref),
+        // PR flavor の finalize は **既存 PR への push 専用** で、`gh pr create` を
+        // 試みないので `--pr-base` (= PR 作成時の base 指定) は不要。issue 側だけが
+        // 必要。`finalize::build_finalize_prompt` の `Flavor::Pr` 分岐も `pr_base` を
+        // 参照していない。`pr.base_ref` はここでは捨てて良い。
     ];
     if let Some(mode) = cmd.agent.permission_mode {
         parts.push("--permission-mode".to_string());
         parts.push(mode.as_arg().to_string());
     }
+    let _ = &pr.base_ref; // 受け取っているが finalize 側で未使用 (上記コメント参照)。
     Ok(parts.join(" "))
 }
 
