@@ -800,6 +800,35 @@ mod tests {
     }
 
     #[test]
+    fn fish_agent_block_wrapped_in_log_keeps_pipestatus_capture_inside_inner_begin() {
+        // `build_fish_agent_block` の出力を `wrap_with_log` に通したときに、
+        // 内側 begin..end (= 実エージェントを回すブロック) の中で `$pipestatus` が
+        // 取れることを保証する (review #19 の修正の回帰防止)。
+        // wrap_with_log は外側に `begin; <inner>; end 2>&1 | tee` を足すだけなので、
+        // ここでは「内側 begin の前に `set -g __rai_agent_status 0` が来て、内側 begin
+        // の **直後の `end` の手前** で pipestatus を読む」という構造を完全一致で確認する。
+        let inner = build_agent_shell_command(
+            "ccs c1 -- {PROMPT} | {RAI} claude format",
+            "hello world",
+            "/opt/rai/rai",
+            Some("rai finalize"),
+            Shell::Fish,
+        );
+        let wrapped = wrap_with_log(&inner, Path::new("/tmp/run.log"), Shell::Fish);
+        assert_eq!(
+            wrapped,
+            "begin; set -g __rai_agent_status 0; \
+             begin; ccs c1 -- 'hello world' | '/opt/rai/rai' claude format; \
+             set -l __rai_pipe $pipestatus; \
+             for s in $__rai_pipe; if test $s -ne 0; set -g __rai_agent_status $s; end; end; \
+             end; \
+             if test $__rai_agent_status -ne 0; \
+             echo \"rai: agent exited with status $__rai_agent_status; skip auto publish\" >&2; \
+             exit $__rai_agent_status; end; rai finalize; end 2>&1 | tee -a '/tmp/run.log'"
+        );
+    }
+
+    #[test]
     fn flavor_label_matches_session_naming() {
         assert_eq!(Flavor::Issue.label(), "issue");
         assert_eq!(Flavor::Pr.label(), "pr");
