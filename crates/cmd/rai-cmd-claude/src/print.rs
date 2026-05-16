@@ -382,10 +382,9 @@ mod tests {
     #[test]
     fn validate_rejects_stream_json_without_claude_verbose() {
         let err = validate("uuid", "p", Some(OutputFormat::StreamJson), false).unwrap_err();
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("--claude-verbose"),
-            "unexpected message: {msg}"
+        assert_eq!(
+            err.to_string(),
+            "--output-format stream-json requires --claude-verbose (claude rejects this combination)"
         );
     }
 
@@ -455,10 +454,16 @@ mod tests {
             markers.join(uuid).exists(),
             "marker should exist after 1st call"
         );
-        let log1 = fs::read_to_string(&log).unwrap();
-        assert!(
-            log1.contains(&format!("--session-id {uuid}")),
-            "first call should use --session-id: {log1:?}"
+        let log_after_first: Vec<Vec<String>> = parse_stub_log(&log);
+        assert_eq!(
+            log_after_first,
+            vec![vec![
+                "--print".to_string(),
+                "--session-id".to_string(),
+                uuid.to_string(),
+                "--".to_string(),
+                "first".to_string(),
+            ]]
         );
 
         let code = execute(
@@ -473,15 +478,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(code, 0);
-        let log2 = fs::read_to_string(&log).unwrap();
-        let second_line = log2.lines().nth(1).expect("two log lines");
-        assert!(
-            second_line.contains(&format!("--resume {uuid}")),
-            "second call should use --resume: {second_line:?}"
-        );
-        assert!(
-            !second_line.contains("--session-id"),
-            "second call must not include --session-id: {second_line:?}"
+        let log_after_second: Vec<Vec<String>> = parse_stub_log(&log);
+        assert_eq!(
+            log_after_second,
+            vec![
+                vec![
+                    "--print".to_string(),
+                    "--session-id".to_string(),
+                    uuid.to_string(),
+                    "--".to_string(),
+                    "first".to_string(),
+                ],
+                vec![
+                    "--print".to_string(),
+                    "--resume".to_string(),
+                    uuid.to_string(),
+                    "--".to_string(),
+                    "second".to_string(),
+                ],
+            ]
         );
     }
 
@@ -549,14 +564,36 @@ mod tests {
         )
         .unwrap();
         assert_eq!(code, 1);
-        let log2 = fs::read_to_string(&log).unwrap();
-        let lines: Vec<&str> = log2.lines().collect();
-        assert_eq!(lines.len(), 2);
-        assert!(
-            lines[1].contains(&format!("--resume {uuid}")),
-            "second call after failure must still use --resume: {:?}",
-            lines[1]
+        let parsed = parse_stub_log(&log);
+        assert_eq!(
+            parsed,
+            vec![
+                vec![
+                    "--print".to_string(),
+                    "--session-id".to_string(),
+                    uuid.to_string(),
+                    "--".to_string(),
+                    "first".to_string(),
+                ],
+                vec![
+                    "--print".to_string(),
+                    "--resume".to_string(),
+                    uuid.to_string(),
+                    "--".to_string(),
+                    "second".to_string(),
+                ],
+            ]
         );
+    }
+
+    /// stub claude が `echo "$@" >> <log>` で書き出した行を、空白区切りの token 列に
+    /// パースする。各テストが期待 argv と `assert_eq!` で完全比較できるようにする。
+    fn parse_stub_log(path: &Path) -> Vec<Vec<String>> {
+        fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| line.split_whitespace().map(str::to_string).collect())
+            .collect()
     }
 
     /// 簡易な tempdir cleanup ガード (`tempfile` クレートを workspace に足さずに済ます)。

@@ -6,12 +6,10 @@
 //! しないのはワークスペースの「Subcommand crate どうしを横断して depend しない」
 //! ポリシーに従うため (`AGENTS.md` の Important Instructions 参照)。
 
-use std::fs::File;
-use std::io::Read;
-
-use anyhow::{anyhow, Context as _};
+use anyhow::{bail, Context as _};
 use clap::Args;
 use rai_core::{cli::Run, proc, shell, Ctx, Result};
+use uuid::Uuid;
 
 use crate::print::{OutputFormat, PermissionMode};
 
@@ -86,14 +84,21 @@ pub struct Cmd {
 
 impl Run for Cmd {
     fn run(self, _ctx: &Ctx) -> Result<()> {
-        let id_a = match self.id_a.clone() {
-            Some(v) => v,
-            None => random_uuid_v4().context("generate session id A")?,
-        };
-        let id_b = match self.id_b.clone() {
-            Some(v) => v,
-            None => random_uuid_v4().context("generate session id B")?,
-        };
+        // print 側と同じ pre-validation。pair の場合は session id 生成 / eprintln /
+        // rai pair の spawn など副作用が走った後に最初の `rai claude print` で死ぬのを
+        // 避けたい。print に揃えて早期エラーする。
+        if matches!(self.output_format, Some(OutputFormat::StreamJson)) && !self.claude_verbose {
+            bail!("--output-format stream-json requires --claude-verbose (claude rejects this combination)");
+        }
+
+        let id_a = self
+            .id_a
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let id_b = self
+            .id_b
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         let rai_bin = match self.rai_bin.clone() {
             Some(p) => p,
@@ -196,24 +201,6 @@ fn build_print_invocation(
     parts.join(" ")
 }
 
-/// `/dev/urandom` から 16 byte 読んで RFC 4122 v4 形式の UUID 文字列を作る。
-pub(crate) fn random_uuid_v4() -> Result<String> {
-    let mut bytes = [0u8; 16];
-    let mut f = File::open("/dev/urandom").map_err(|e| anyhow!("open /dev/urandom: {e}"))?;
-    f.read_exact(&mut bytes)
-        .map_err(|e| anyhow!("read /dev/urandom: {e}"))?;
-    bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
-    bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant RFC 4122
-    Ok(format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0], bytes[1], bytes[2], bytes[3],
-        bytes[4], bytes[5],
-        bytes[6], bytes[7],
-        bytes[8], bytes[9],
-        bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,17 +279,5 @@ mod tests {
             got,
             "rai claude print --session-id abc -- '/goal echo $HOME && rm -rf /'"
         );
-    }
-
-    #[test]
-    fn random_uuid_v4_has_version_and_variant_bits() {
-        for _ in 0..32 {
-            let u = random_uuid_v4().expect("generate");
-            assert_eq!(u.len(), 36, "got {u}");
-            let bytes = u.as_bytes();
-            assert_eq!(bytes[14] as char, '4', "version bit: {u}");
-            let v = bytes[19] as char;
-            assert!(matches!(v, '8' | '9' | 'a' | 'b'), "variant bit: {u}");
-        }
     }
 }
