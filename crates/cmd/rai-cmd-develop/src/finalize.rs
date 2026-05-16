@@ -129,16 +129,24 @@ fn build_finalize_prompt(ctx: &Cmd, has_local: bool, has_commits: bool) -> Strin
     };
     match ctx.flavor {
         Flavor::Issue => {
+            // base_sentence は前後にスペースを **含めて** 1 つの文字列に閉じ込める。
+            // 旧実装は「base_sentence の先頭 " PR…" + format 側の ` \\` で trailing
+            // space」の組み合わせでスペースを管理していたが、誰がスペースを足すかが
+            // 読みにくく、`None` 時に妙な空白が残るリスクがあった。
+            // - `Some` → ` PR …にしてください。 ` (前後 1 文字ずつ space)
+            // - `None` → ` ` (単なる space 1 つ)
+            // format 側は `{base_sentence}` の前後にスペースを置かないので、結果として
+            // どちらも `…終わってください。<space>…commit-msg` で揃う。
             let base_sentence = match ctx.pr_base.as_deref() {
-                Some(base) => format!(" PR を作成する際は base を `{base}` にしてください。"),
-                None => String::new(),
+                Some(base) => format!(" PR を作成する際は base を `{base}` にしてください。 "),
+                None => " ".to_string(),
             };
             format!(
                 "GitHub Issue {url} (`{title}`) の現在の作業状態を確認し、commit、push、PR の作成まで仕上げてください。\
 worktree のブランチは `{branch}` で、現在 {state}。\
 未コミット変更があれば論理的な単位で commit し、`git push -u origin HEAD:{branch}` で push したあと、\
 リポジトリ `{repo}` に対して `gh pr create` で PR を作成してください。本文には `Closes {url}` を含めること。\
-既に同じブランチに PR がある場合は新規作成せず、その URL を表示するだけで終わってください。{base_sentence} \
+既に同じブランチに PR がある場合は新規作成せず、その URL を表示するだけで終わってください。{base_sentence}\
 commit-msg hook がメッセージを弾いた場合はメッセージを直して commit し直してください。\
 `--no-verify` などで hook を回避するのは禁止です。",
                 url = ctx.url,
