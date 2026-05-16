@@ -290,18 +290,23 @@ fn execute_in_tmux(argv: &[String], marker_dir: &Path, session_id: &str) -> Resu
     let script_path_str = script_path
         .to_str()
         .context("script path is not valid UTF-8")?;
-    let tmux_argv: Vec<&str> = vec![
-        "tmux",
-        "new-session",
-        "-d",
-        "-s",
-        tmux_session.as_str(),
-        script_path_str,
-    ];
+    // tmux の `[shell-command]` 位置に渡す引数は、tmux が内部で `default-shell -c`
+    // に投げ込む 1 段の解釈を受ける。`user_shell_argv` で個別クォートしただけだと、
+    // 外側シェルは正しく扱うが tmux 内部の `default-shell -c` 段でパスのスペース
+    // 等が再度分割されてしまう。`develop::common::launch` と同じ流儀で、scriptパスを
+    // **シェル種別に応じて 1 度クォートしてから** 1 行のシェルコマンドを組み立て、
+    // `user_shell_command` で渡す。
+    let (_user_shell, shell_kind) = shell::detect_user_shell();
+    let q = shell::quote_for(shell_kind);
+    let tmux_cmdline = format!(
+        "tmux new-session -d -s {} {}",
+        q(&tmux_session),
+        q(script_path_str),
+    );
 
-    let status = shell::user_shell_argv(&tmux_argv)
+    let status = shell::user_shell_command(&tmux_cmdline)
         .status()
-        .with_context(|| format!("failed to spawn tmux: {tmux_argv:?}"))?;
+        .with_context(|| format!("failed to spawn tmux: {tmux_cmdline}"))?;
     if !status.success() {
         let code = proc::shell_exit_code(&status);
         bail!(

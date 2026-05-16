@@ -63,12 +63,15 @@ impl Run for Cmd {
         let _lock = queue::Lock::try_acquire(&paths.lock_file())?;
 
         let signal_slot = signals::install()?;
-        let agent_argv =
-            shell_words::split(&self.agent_cmd).context("failed to split --agent-cmd")?;
-        if agent_argv.is_empty() {
+        // `--agent-cmd` は **トークン分割せず** シェル文字列としてそのまま渡す。
+        // gotchas.md / AGENTS.md の「ユーザー入力 (`--engine-cmd`, `--on-update`,
+        // `--agent-cmd` 等) は `$SHELL -c` に投げる」ポリシーに準拠。
+        // `shell_words::split` を通すと `claude --print | tee` の `|` がトークン化
+        // 後に個別クォートされてパイプとして機能しなくなる。
+        if self.agent_cmd.trim().is_empty() {
             bail!("--agent-cmd is empty");
         }
-        let agent_argv = Arc::new(agent_argv);
+        let agent_cmd = Arc::new(self.agent_cmd.clone());
         let paths = Arc::new(paths);
 
         let (done_tx, done_rx) = mpsc::channel::<u64>();
@@ -87,13 +90,13 @@ impl Run for Cmd {
                 let claimed = pop_pending(&paths, &queue_mutex)?;
                 let Some((pr, entry)) = claimed else { break };
                 let paths = paths.clone();
-                let agent_argv = agent_argv.clone();
+                let agent_cmd = agent_cmd.clone();
                 let queue_mutex = queue_mutex.clone();
                 let done_tx = done_tx.clone();
                 let handle = thread::Builder::new()
                     .name(format!("conflicts-worker-{pr}"))
                     .spawn(move || {
-                        let result = process_one(&paths, &agent_argv, pr, &entry);
+                        let result = process_one(&paths, &agent_cmd, pr, &entry);
                         finalize(&paths, &queue_mutex, pr, result);
                         done_tx.send(pr).ok();
                     })?;
@@ -323,7 +326,7 @@ struct WorkerOutcome {
     error: Option<String>,
 }
 
-fn process_one(paths: &Paths, agent_argv: &[String], pr: u64, entry: &Entry) -> WorkerOutcome {
+fn process_one(paths: &Paths, agent_cmd: &str, pr: u64, entry: &Entry) -> WorkerOutcome {
     let log_path = paths
         .logs_dir()
         .join(format!("{pr}-{}.log", short(&entry.head_sha)));
@@ -432,10 +435,13 @@ commit メッセージは各リポジトリの commitlint / husky hook を満た
             base = entry.base_ref,
             wt = wt.display(),
         );
-        let mut argv = agent_argv.to_vec();
-        argv.push(prompt);
-        let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-        let mut c = shell::user_shell_argv(&argv_refs);
+        // agent_cmd はシェル文字列のまま `$SHELL -c` に渡す。プロンプトだけは
+        // シェル種別に応じてクォートして末尾に append する。これで agent_cmd 内の
+        // パイプ・リダイレクト・サブシェル等が意図通り解釈される。
+        let (_shell_path, shell_kind) = shell::detect_user_shell();
+        let q = shell::quote_for(shell_kind);
+        let full_cmd = format!("{} {}", agent_cmd, q(&prompt));
+        let mut c = shell::user_shell_command(&full_cmd);
         c.current_dir(&wt);
         attach_log(&mut c, &log_path);
         let st = c.status();
