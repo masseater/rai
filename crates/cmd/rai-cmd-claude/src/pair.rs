@@ -6,7 +6,7 @@
 //! しないのはワークスペースの「Subcommand crate どうしを横断して depend しない」
 //! ポリシーに従うため (`AGENTS.md` の Important Instructions 参照)。
 
-use anyhow::{bail, Context as _};
+use anyhow::{anyhow, bail, Context as _};
 use clap::Args;
 use rai_core::{cli::Run, proc, shell, Ctx, Result};
 use uuid::Uuid;
@@ -100,17 +100,20 @@ impl Run for Cmd {
             .clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
+        // current_exe() の失敗は通常起き得ない異常事態。テスト経路では `--rai-bin`
+        // で明示できるので、フォールバックの `"rai"` 推測は廃止し、わかりやすい
+        // エラーで停止する (spec 22 の意図)。
         let rai_bin = match self.rai_bin.clone() {
             Some(p) => p,
-            None => match std::env::current_exe() {
-                Ok(p) => p.display().to_string(),
-                Err(e) => {
-                    eprintln!(
-                        "rai claude pair: warning: current_exe() failed ({e}); falling back to PATH-resolved 'rai'"
-                    );
-                    "rai".to_string()
-                }
-            },
+            None => std::env::current_exe()
+                .map_err(|e| {
+                    anyhow!(
+                        "failed to resolve current rai executable (current_exe(): {e}). \
+                     pass --rai-bin <PATH> to override."
+                    )
+                })?
+                .display()
+                .to_string(),
         };
 
         let (_shell_path, shell_kind) = shell::detect_user_shell();
@@ -128,27 +131,32 @@ impl Run for Cmd {
 
         eprintln!("rai claude pair: session A={id_a} session B={id_b}");
 
+        // `cmd_a` / `cmd_b` は既にシェルコマンド文字列なので、これを `rai pair`
+        // の `--command-a` / `--command-b` 値として **1 引数のまま** 渡したい。
+        // `develop::common::launch` と同じパターン: argv を `user_shell_command`
+        // 用に手でクォートして 1 行のシェルコマンドに組み立てる。
         let max_cycles = self.max_cycles.to_string();
         let max_hours = self.max_hours.to_string();
-        let mut argv: Vec<&str> = vec![
-            rai_bin.as_str(),
-            "pair",
-            "--command-a",
-            cmd_a.as_str(),
-            "--command-b",
-            cmd_b.as_str(),
-            "--max-cycles",
-            max_cycles.as_str(),
-            "--max-hours",
-            max_hours.as_str(),
+        let mut parts: Vec<String> = vec![
+            q(&rai_bin),
+            "pair".to_string(),
+            "--command-a".to_string(),
+            q(&cmd_a),
+            "--command-b".to_string(),
+            q(&cmd_b),
+            "--max-cycles".to_string(),
+            max_cycles,
+            "--max-hours".to_string(),
+            max_hours,
         ];
         if self.no_status_bar {
-            argv.push("--no-status-bar");
+            parts.push("--no-status-bar".to_string());
         }
+        let full_cmd = parts.join(" ");
 
-        let status = shell::user_shell_argv(&argv)
+        let status = shell::user_shell_command(&full_cmd)
             .status()
-            .with_context(|| format!("failed to spawn `rai pair` ({argv:?})"))?;
+            .with_context(|| format!("failed to spawn `rai pair`: {full_cmd}"))?;
         let code = proc::shell_exit_code(&status);
         if code != 0 {
             std::process::exit(code);

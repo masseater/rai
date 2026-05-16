@@ -605,11 +605,14 @@ mod tests {
 
         let log = tmp.join("argv.log");
         let stub = tmp.join("stub-claude.sh");
+        // stub は引数を **NUL 区切り** で 1 invocation = 1 行に書き出す。
+        // 末尾に余分な `\0` を 1 つ足すことで、行末の改行と区別できる。これにより
+        // プロンプトにスペースが含まれていてもパース時にトークン分割せずに済む。
         fs::write(
             &stub,
             format!(
-                "#!/bin/sh\necho \"$@\" >> {}\nexit 0\n",
-                shell::quote_posix(log.to_str().unwrap())
+                "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done >> {log}\nprintf '\\0\\n' >> {log}\nexit 0\n",
+                log = shell::quote_posix(log.to_str().unwrap()),
             ),
         )
         .unwrap();
@@ -703,12 +706,12 @@ mod tests {
 
         let log = tmp.join("argv.log");
         let stub = tmp.join("stub-claude.sh");
-        // exit 1 で死ぬが、argv は記録する。
+        // exit 1 で死ぬが、argv は NUL 区切りで記録する。
         fs::write(
             &stub,
             format!(
-                "#!/bin/sh\necho \"$@\" >> {}\nexit 1\n",
-                shell::quote_posix(log.to_str().unwrap())
+                "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done >> {log}\nprintf '\\0\\n' >> {log}\nexit 1\n",
+                log = shell::quote_posix(log.to_str().unwrap()),
             ),
         )
         .unwrap();
@@ -770,13 +773,21 @@ mod tests {
         );
     }
 
-    /// stub claude が `echo "$@" >> <log>` で書き出した行を、空白区切りの token 列に
-    /// パースする。各テストが期待 argv と `assert_eq!` で完全比較できるようにする。
+    /// stub claude が **NUL 区切り** で書き出した argv をパースする。
+    /// 1 invocation = 1 行 (改行で区切られる)、各 invocation の argv は `\0` で区切られ、
+    /// 末尾に空の `\0` 1 つを置いて行末との区別を作っている。
+    /// プロンプトにスペースが含まれていてもトークン分割せずに済む。
     fn parse_stub_log(path: &Path) -> Vec<Vec<String>> {
-        fs::read_to_string(path)
-            .unwrap()
-            .lines()
-            .map(|line| line.split_whitespace().map(str::to_string).collect())
+        let raw = fs::read(path).unwrap();
+        // 各 invocation は `arg1\0arg2\0...\0argN\0\0\n` の形で 1 行 (改行で終わる)。
+        raw.split(|b| *b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                line.split(|b| *b == b'\0')
+                    .filter(|tok| !tok.is_empty())
+                    .map(|tok| String::from_utf8(tok.to_vec()).expect("utf-8 argv"))
+                    .collect()
+            })
             .collect()
     }
 
@@ -838,12 +849,13 @@ mod tests {
 
         let log = tmp.join("argv.log");
         let stub = tmp.join("stub-claude.sh");
-        // 0 で終了し、tmux 側の sleep infinity でセッションが残るパスを検証する。
+        // 0 で終了し、tmux 側の hold loop でセッションが残るパスを検証する。
+        // argv は NUL 区切りで記録 (空白を含むプロンプトでも正しくパースできる)。
         fs::write(
             &stub,
             format!(
-                "#!/bin/sh\necho \"$@\" >> {}\nexit 0\n",
-                shell::quote_posix(log.to_str().unwrap())
+                "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done >> {log}\nprintf '\\0\\n' >> {log}\nexit 0\n",
+                log = shell::quote_posix(log.to_str().unwrap()),
             ),
         )
         .unwrap();
