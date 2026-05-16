@@ -12,35 +12,9 @@ use anyhow::{bail, Context as _};
 use clap::{Args, ValueEnum};
 use rai_core::{cli::Run, proc, shell, Ctx, Result};
 
-/// claude の `--permission-mode` に渡す値。`rai develop` と同じ 6 種。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum PermissionMode {
-    #[value(name = "acceptEdits")]
-    AcceptEdits,
-    #[value(name = "auto")]
-    Auto,
-    #[value(name = "bypassPermissions")]
-    BypassPermissions,
-    #[value(name = "default")]
-    Default,
-    #[value(name = "dontAsk")]
-    DontAsk,
-    #[value(name = "plan")]
-    Plan,
-}
-
-impl PermissionMode {
-    pub fn as_arg(self) -> &'static str {
-        match self {
-            Self::AcceptEdits => "acceptEdits",
-            Self::Auto => "auto",
-            Self::BypassPermissions => "bypassPermissions",
-            Self::Default => "default",
-            Self::DontAsk => "dontAsk",
-            Self::Plan => "plan",
-        }
-    }
-}
+// `--permission-mode` の共通型は rai-core に置いてある (旧実装で
+// rai-cmd-develop と enum 定義が重複していたのを統合)。
+pub use rai_core::claude::PermissionMode;
 
 /// `--output-format` に渡す値。claude の値 (text / json / stream-json) と一致。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -357,7 +331,19 @@ fn execute_in_tmux(argv: &[String], marker_dir: &Path, session_id: &str) -> Resu
                 }
             }
             Err(e) => {
-                return Err(e).with_context(|| format!("read sentinel {}", sentinel.display()))
+                // NotFound 以外 (permission denied 等) は復旧見込みなく落ちるが、
+                // tmux session を残置しない方が clean。kill を試みてから err を返す。
+                // kill 自体の失敗は無視する (session が既に消えている可能性もある)。
+                let _ = shell::user_shell_argv(&["tmux", "kill-session", "-t", &tmux_session])
+                    .stderr(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .status();
+                return Err(e).with_context(|| {
+                    format!(
+                        "read sentinel {} (tmux session '{tmux_session}' was killed as cleanup)",
+                        sentinel.display()
+                    )
+                });
             }
         }
         std::thread::sleep(Duration::from_millis(200));
@@ -501,19 +487,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn argv_permission_modes_serialize() {
-        for (m, want) in [
-            (PermissionMode::AcceptEdits, "acceptEdits"),
-            (PermissionMode::Auto, "auto"),
-            (PermissionMode::BypassPermissions, "bypassPermissions"),
-            (PermissionMode::Default, "default"),
-            (PermissionMode::DontAsk, "dontAsk"),
-            (PermissionMode::Plan, "plan"),
-        ] {
-            assert_eq!(m.as_arg(), want);
-        }
-    }
+    // PermissionMode の as_arg() は rai-core 側でテスト済み
+    // (`rai_core::claude::tests::as_arg_serializes_all_variants`)。
+    // ここでは重複しない。
 
     #[test]
     fn argv_output_formats_serialize() {

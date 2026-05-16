@@ -66,34 +66,9 @@ pub struct AgentArgs {
     pub permission_mode: Option<PermissionMode>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum PermissionMode {
-    #[value(name = "acceptEdits")]
-    AcceptEdits,
-    #[value(name = "auto")]
-    Auto,
-    #[value(name = "bypassPermissions")]
-    BypassPermissions,
-    #[value(name = "default")]
-    Default,
-    #[value(name = "dontAsk")]
-    DontAsk,
-    #[value(name = "plan")]
-    Plan,
-}
-
-impl PermissionMode {
-    pub fn as_arg(self) -> &'static str {
-        match self {
-            Self::AcceptEdits => "acceptEdits",
-            Self::Auto => "auto",
-            Self::BypassPermissions => "bypassPermissions",
-            Self::Default => "default",
-            Self::DontAsk => "dontAsk",
-            Self::Plan => "plan",
-        }
-    }
-}
+// `--permission-mode` の共通型は rai-core::claude に置いてある (旧実装で
+// rai-cmd-claude と enum 定義が重複していたのを統合)。
+pub use rai_core::claude::PermissionMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Flavor {

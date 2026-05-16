@@ -347,6 +347,28 @@ mod tests {
     }
 
     #[test]
+    fn slugify_japanese_title_falls_back_to_empty() {
+        // ASCII 英数字以外は全て区切りに変換されるため、純日本語タイトルは空に落ちる。
+        // `default_branch` 側でこの場合に `develop/issue-{number}-{ts}` に倒すフォールバック
+        // を用意しているので、空文字列が返ることが期待挙動。
+        assert_eq!(slugify("バグ修正"), "");
+        // 日本語混じり (ASCII 部分が拾われる) も検証する。
+        assert_eq!(slugify("バグ fix for foo-bar"), "fix-for-foo-bar");
+    }
+
+    #[test]
+    fn default_branch_for_japanese_title_uses_number_timestamp_only() {
+        let branch = default_branch("バグ修正", 42);
+        assert!(branch.starts_with("develop/issue-42-"), "branch = {branch}");
+        // slug 部分が無いので、`develop/issue-{number}-{ts}` 形 (ts は数値とハイフンのみ)。
+        let rest = branch.strip_prefix("develop/issue-42-").unwrap();
+        assert!(
+            rest.chars().all(|c| c.is_ascii_digit() || c == '-'),
+            "rest = {rest}"
+        );
+    }
+
+    #[test]
     fn default_prompt_auto_publish_stops_at_push_and_defers_pr_to_finalize() {
         let prompt = build_prompt(
             None,
