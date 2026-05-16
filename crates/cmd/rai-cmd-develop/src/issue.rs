@@ -259,18 +259,19 @@ fn build_prompt(
             .replace("{ISSUE_URL}", url)
             .replace("{ISSUE_TITLE}", title));
     }
-    // 「既に同じブランチへの PR があれば新規作成せず追加 push のみ」を両分岐に入れる。
-    // - auto_publish=true: agent と finalize agent の二重 `gh pr create` で finalize 側が
-    //   重複作成エラーになる可能性を避ける。
-    // - auto_publish=false: 既存 PR を二重に作成しない安全装置として同じ文言を入れる。
-    let no_dup_pr = "既に同じブランチへの PR があれば新規作成せず、追加 push のみ行ってください。";
+    // 役割分担:
+    // - auto_publish=true (デフォルト): agent は commit & push まで、PR 作成は後段の
+    //   finalize agent に任せる。二重 `gh pr create` の試行を避ける + PR 本文の
+    //   テンプレを finalize 側に集約できる。
+    // - auto_publish=false (`--no-auto-publish`): finalize は起動しないので、agent
+    //   自身が PR 作成まで完結する。既存 PR の重複作成を避ける safety net も明示。
     if auto_publish {
         Ok(format!(
-            "GitHub Issue {url} (`{title}`) を一気通貫で開発し、PR を出すところまで自走してください。実装したらテスト・ビルド・lint をローカルで通し、commit して push し、`gh pr create` で PR を作成します。PR 本文には `Closes {url}` を含めてください。{no_dup_pr}commit-msg hook がメッセージを弾いた場合はメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
+            "GitHub Issue {url} (`{title}`) を実装し、テスト・ビルド・lint をローカルで通したうえで、論理単位の commit を作って push するところまで自走してください。PR 作成 (= `gh pr create`) は **rai が後段で finalize agent を起動して担当する** ので、agent 側からは作成しないでください。commit-msg hook がメッセージを弾いた場合はメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
         ))
     } else {
         Ok(format!(
-            "GitHub Issue {url} (`{title}`) を一気通貫で開発し、commit、push、`gh pr create` で PR を作成するところまで自走してください。テスト・ビルド・lint をローカルで通すこと。{no_dup_pr}commit-msg hook がメッセージを弾いたらメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
+            "GitHub Issue {url} (`{title}`) を一気通貫で開発し、commit、push、`gh pr create` で PR を作成するところまで自走してください (rai 側は `--no-auto-publish` 指定のため finalize agent を起動しません)。テスト・ビルド・lint をローカルで通すこと。PR 本文には `Closes {url}` を含めてください。既に同じブランチへの PR があれば新規作成せず、追加 push のみ行ってください。commit-msg hook がメッセージを弾いたらメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
         ))
     }
 }
@@ -346,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn default_prompt_directs_agent_to_publish_without_handoff_language() {
+    fn default_prompt_auto_publish_stops_at_push_and_defers_pr_to_finalize() {
         let prompt = build_prompt(
             None,
             "https://github.com/o/r/issues/13",
@@ -354,11 +355,12 @@ mod tests {
             true,
         )
         .unwrap();
-        // build_prompt の戻り値は引数から一意に決まるので、AGENTS.md のテスト
-        // ガイドラインに従って完全一致で検証する。
+        // build_prompt の戻り値は引数から一意。AGENTS.md Testing ガイドラインに従い
+        // 完全一致で検証する。auto_publish=true では agent は commit&push まで、PR
+        // 作成は後段の finalize agent に任せる役割分担を明示する。
         assert_eq!(
             prompt,
-            "GitHub Issue https://github.com/o/r/issues/13 (`Auto publish`) を一気通貫で開発し、PR を出すところまで自走してください。実装したらテスト・ビルド・lint をローカルで通し、commit して push し、`gh pr create` で PR を作成します。PR 本文には `Closes https://github.com/o/r/issues/13` を含めてください。既に同じブランチへの PR があれば新規作成せず、追加 push のみ行ってください。commit-msg hook がメッセージを弾いた場合はメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
+            "GitHub Issue https://github.com/o/r/issues/13 (`Auto publish`) を実装し、テスト・ビルド・lint をローカルで通したうえで、論理単位の commit を作って push するところまで自走してください。PR 作成 (= `gh pr create`) は **rai が後段で finalize agent を起動して担当する** ので、agent 側からは作成しないでください。commit-msg hook がメッセージを弾いた場合はメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
         );
     }
 
@@ -373,7 +375,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             prompt,
-            "GitHub Issue https://github.com/o/r/issues/13 (`Manual publish`) を一気通貫で開発し、commit、push、`gh pr create` で PR を作成するところまで自走してください。テスト・ビルド・lint をローカルで通すこと。既に同じブランチへの PR があれば新規作成せず、追加 push のみ行ってください。commit-msg hook がメッセージを弾いたらメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
+            "GitHub Issue https://github.com/o/r/issues/13 (`Manual publish`) を一気通貫で開発し、commit、push、`gh pr create` で PR を作成するところまで自走してください (rai 側は `--no-auto-publish` 指定のため finalize agent を起動しません)。テスト・ビルド・lint をローカルで通すこと。PR 本文には `Closes https://github.com/o/r/issues/13` を含めてください。既に同じブランチへの PR があれば新規作成せず、追加 push のみ行ってください。commit-msg hook がメッセージを弾いたらメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
         );
     }
 }

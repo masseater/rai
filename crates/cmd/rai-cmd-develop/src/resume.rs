@@ -127,6 +127,13 @@ fn resolve_target(cmd: &Cmd, arg: &str) -> Result<Target> {
     bail!("invalid TARGET: {arg} (expected number or GitHub issue/pull URL)")
 }
 
+// 注: `Target.base_ref` の `Option` は flavor で意味が変わる:
+// - `Flavor::Issue` → 常に `None`。PR base は CLI の `--pr-base` か
+//   `local_origin_head_branch()` で後段で解決する。
+// - `Flavor::Pr` → 常に `Some(pr.base_ref)`。PR が GitHub から取れる時点で base が
+//   確定しているので、Issue 側のフォールバック経路を踏まない。
+// 型レベルで表現していないので、`build_target` を将来変更する際はこの不変条件を維持
+// すること。
 fn build_target(cmd: &Cmd, owner: &str, repo: &str, number: u64, flavor: Flavor) -> Result<Target> {
     match flavor {
         Flavor::Issue => {
