@@ -140,16 +140,16 @@ pub fn build_engine_cmd(engine_cmd: &str, permission_mode: Option<PermissionMode
         // 単一に正規化したうえで、行頭にプレースホルダがあった場合に残る先頭スペースも
         // `trim_start` で取り除いてから返す (例: `{PERMISSION_MODE} ccs c1 -- …` で
         // permission_mode=None なら ` ccs c1 -- …` → `ccs c1 -- …`)。
-        let replaced = match permission_mode {
-            Some(mode) => engine_cmd.replace(
-                "{PERMISSION_MODE}",
-                &format!("--permission-mode {}", mode.as_arg()),
-            ),
-            None => collapse_spaces(&engine_cmd.replace("{PERMISSION_MODE}", ""))
-                .trim_start()
-                .to_string(),
+        // `Some` 側でも、ユーザーがプレースホルダの前後にタブ・連続スペースを
+        // 入れたカスタムテンプレを使った場合に余計な空白が残らないよう、`None` 側と
+        // 同じ正規化 (`collapse_spaces` + `trim_start`) を通す。
+        let replacement = match permission_mode {
+            Some(mode) => format!("--permission-mode {}", mode.as_arg()),
+            None => String::new(),
         };
-        return replaced;
+        return collapse_spaces(&engine_cmd.replace("{PERMISSION_MODE}", &replacement))
+            .trim_start()
+            .to_string();
     }
     if let Some(mode) = permission_mode {
         format!("{engine_cmd} --permission-mode {}", mode.as_arg())

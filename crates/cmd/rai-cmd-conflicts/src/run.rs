@@ -421,8 +421,13 @@ fn process_one(paths: &Paths, agent_argv: &[String], pr: u64, entry: &Entry) -> 
     let conflict = merge.is_err();
 
     if conflict {
+        // commit メッセージは **agent が決める** (rai が `git commit -m '...'` で
+        // 決め打ちすると commitlint hook に確実に弾かれる)。AGENTS.md / gotchas.md の
+        // 「rai 側で `git commit -m '...'` を打たない」ポリシーに準拠。
         let prompt = format!(
-            "PR #{pr} ({title}) のコンフリクトを解消して `git push --force-with-lease` まで完了させてください。マージ中: origin/{base} -> HEAD。リポジトリ作業ディレクトリ: {wt}",
+            "PR #{pr} ({title}) のコンフリクトを解消し、解消後の commit (= merge commit) も agent 側で作成したうえで `git push --force-with-lease` まで完了させてください。\
+マージ中: origin/{base} -> HEAD。リポジトリ作業ディレクトリ: {wt}。\
+commit メッセージは各リポジトリの commitlint / husky hook を満たす形にして、hook に弾かれたら直して再 commit してください。`--no-verify` 等の hook 回避は禁止です。",
             title = entry.title,
             base = entry.base_ref,
             wt = wt.display(),
@@ -464,20 +469,23 @@ fn process_one(paths: &Paths, agent_argv: &[String], pr: u64, entry: &Entry) -> 
         }
 
         if is_dirty(&wt) {
-            let _ = run_in(&log, &wt, "git", &["add", "-A"]);
-            let _ = run_in(
-                &log,
-                &wt,
-                "git",
-                &[
-                    "commit",
-                    "-m",
-                    &format!(
-                        "Merge {} into PR #{} (automated conflict resolution)",
-                        entry.base_ref, pr
-                    ),
-                ],
-            );
+            // agent が commit せずに終わった = プロンプトで明示的に commit を要請して
+            // いるのに守られていない異常状態。rai 側で勝手に `git commit -m '...'`
+            // するのは commit-msg hook に弾かれるリスクが高く、`finalize_after_agent`
+            // と同じく rai は commit subject を決めない方針 (gotchas.md)。明示的に
+            // エラーで落として、ユーザーが worktree を覗いて手動 commit するか agent
+            // を再起動できるようにする。
+            cleanup_wt();
+            return WorkerOutcome {
+                log_path,
+                error: Some(
+                    "worktree still has uncommitted changes after agent finished; \
+                     rai will not commit on the agent's behalf (commitlint / husky \
+                     hooks belong to each repo). inspect the worktree, finish the \
+                     commit manually, then push."
+                        .to_string(),
+                ),
+            };
         }
     }
 

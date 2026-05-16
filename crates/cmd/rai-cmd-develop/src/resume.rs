@@ -4,7 +4,7 @@
 //! context limit で途中終了した時の復帰用。既存 worktree を `git reset` /
 //! `git pull` で巻き戻さずに、resume 専用 prompt で agent を再起動する。
 
-use anyhow::{bail, Context};
+use anyhow::{anyhow, bail, Context};
 use clap::Args;
 use rai_core::{cli::Run, shell, Ctx, Result};
 use serde::Deserialize;
@@ -116,7 +116,12 @@ fn resolve_target(cmd: &Cmd, arg: &str) -> Result<Target> {
     }
     if let Ok(n) = arg.parse::<u64>() {
         let (owner, repo) = common::resolve_repo(cmd.repo.as_deref())?;
-        let flavor = cmd.flavor.unwrap_or(Flavor::Issue);
+        // 数値引数は Issue/PR どちらを指すか曖昧。以前は黙って Issue にフォール
+        // バックしていたが、PR を意図したユーザーが「ローカルブランチが見つかり
+        // ません」というずれたエラーを受け取って詰む。`--flavor` の明示を要求する。
+        let flavor = cmd.flavor.ok_or_else(|| anyhow!(
+            "TARGET `{arg}` is a bare number which is ambiguous (issue or PR). pass `--flavor issue` / `--flavor pr`, or use the full GitHub URL instead."
+        ))?;
         return build_target(cmd, &owner, &repo, n, flavor);
     }
     bail!("invalid TARGET: {arg} (expected number or GitHub issue/pull URL)")
