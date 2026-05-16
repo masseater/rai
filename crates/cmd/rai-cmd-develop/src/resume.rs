@@ -311,16 +311,15 @@ fn build_resume_prompt(target: &Target, auto_publish: bool) -> Result<String> {
 }
 
 fn issue_resume_prompt(url: &str, title: &str, branch: &str, auto_publish: bool) -> String {
-    // auto_publish=true (デフォルト): rai は agent 終了後に finalize agent を起動して
-    // PR 作成までの片付けを任せる。agent 側にも「PR を出すところまで」と伝え、
-    // finalize が走らなかった場合のフォールバックを兼ねる。
-    // auto_publish=false (--no-auto-publish): finalize は起動されないので、agent が
-    // 単独で PR 作成まで完了させる必要がある。
+    // 役割分担 (issue.rs::build_prompt と揃える):
+    // - auto_publish=true (デフォルト): rai は agent 終了後に finalize agent を起動して
+    //   PR 作成までを担当するので、agent には commit & push までを依頼し、PR 作成は
+    //   **明示的に禁止** する。これで初回 resume 時の二重 `gh pr create` を避ける。
+    // - auto_publish=false (--no-auto-publish): finalize は起動されないので、agent が
+    //   単独で PR 作成まで完了させる必要がある。
     let publish_clause = if auto_publish {
-        "残作業を仕上げて PR を出すところまで完了させてください。\
-テスト・ビルド・lint をローカルで通し、commit & push、\
-`gh pr create` で PR を作成 (PR 本文に `Closes {url}`)。\
-既に同じブランチへの PR があれば新規作成せず、追加 push のみ行ってください。"
+        "残作業を仕上げ、テスト・ビルド・lint をローカルで通したうえで commit & push まで完了させてください。\
+PR 作成 (= `gh pr create`) は **rai が後段で finalize agent を起動して担当する** ので、agent 側からは作成しないでください。"
     } else {
         // Rust の行継続 `\<newline>` は次行の先頭空白も食うので、`(` は **行末側** に
         // 置いて改行前にスペース + `(` をまとめておく。これで生成プロンプトは
@@ -416,16 +415,18 @@ mod tests {
     }
 
     #[test]
-    fn issue_resume_prompt_auto_publish_true() {
+    fn issue_resume_prompt_auto_publish_true_defers_pr_creation_to_finalize_agent() {
         let p = issue_resume_prompt(
             "https://github.com/o/r/issues/9",
             "Resume me",
             "develop/issue-9-resume-me-20260504-101010",
             true,
         );
+        // auto_publish=true では agent は commit & push まで。PR 作成は後段の
+        // finalize agent に任せる役割分担 (issue.rs::build_prompt と同じ)。
         assert_eq!(
             p,
-            "GitHub Issue https://github.com/o/r/issues/9 (`Resume me`) の作業を **途中から** 再開してください。worktree のブランチは `develop/issue-9-resume-me-20260504-101010`。前回のセッションは rate limit / context limit / tmux 事故などで途中終了しています。最初に必ず `git status` と `git log --oneline -20` で現在の進捗 (未コミット変更・既存 commit) を把握し、未コミット変更があれば論理的な単位で commit を整えながら、残作業を仕上げて PR を出すところまで完了させてください。テスト・ビルド・lint をローカルで通し、commit & push、`gh pr create` で PR を作成 (PR 本文に `Closes https://github.com/o/r/issues/9`)。既に同じブランチへの PR があれば新規作成せず、追加 push のみ行ってください。commit-msg hook がメッセージを弾いた場合はメッセージを直して再 commit してください。`--no-verify` 等の hook 回避は禁止です。"
+            "GitHub Issue https://github.com/o/r/issues/9 (`Resume me`) の作業を **途中から** 再開してください。worktree のブランチは `develop/issue-9-resume-me-20260504-101010`。前回のセッションは rate limit / context limit / tmux 事故などで途中終了しています。最初に必ず `git status` と `git log --oneline -20` で現在の進捗 (未コミット変更・既存 commit) を把握し、未コミット変更があれば論理的な単位で commit を整えながら、残作業を仕上げ、テスト・ビルド・lint をローカルで通したうえで commit & push まで完了させてください。PR 作成 (= `gh pr create`) は **rai が後段で finalize agent を起動して担当する** ので、agent 側からは作成しないでください。commit-msg hook がメッセージを弾いた場合はメッセージを直して再 commit してください。`--no-verify` 等の hook 回避は禁止です。"
         );
     }
 

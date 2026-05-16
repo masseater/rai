@@ -173,15 +173,19 @@ fn has_local_changes() -> Result<bool> {
 
 fn has_publishable_commits(pr_base: Option<&str>) -> Result<bool> {
     // pr_base が明示されているケースは authoritative。`origin/{base}` または
-    // `{base}` のどちらかに新しい commit があれば true、両方とも追いついていれば
-    // **false で確定** する。ここで upstream / origin/HEAD のフォールバックに
-    // 混ぜると、HEAD と異なる base に対して "新しい commit" を誤検出して
-    // finalize agent が無駄に起動する。
+    // `{base}` のどちらかに新しい commit があれば true。それ以外でも、`merge-base` が
+    // 解決できない (= remote をまだ fetch していない / `{base}` が手元に無い等) 場合は
+    // 「リモートのどのブランチからも到達できない commit が HEAD 上にあるか」で
+    // 最終判定する。`merge-base` 失敗で常に false を返すと、新規ブランチで commit
+    // 済みの成果物を捨ててしまう。
     if let Some(base) = pr_base {
         if has_commits_since(&format!("origin/{base}"))? {
             return Ok(true);
         }
-        return has_commits_since(base);
+        if has_commits_since(base)? {
+            return Ok(true);
+        }
+        return remote_unreachable_commits();
     }
 
     // pr_base 未指定: upstream が設定済みならそれが答え。
@@ -192,11 +196,8 @@ fn has_publishable_commits(pr_base: Option<&str>) -> Result<bool> {
     }
 
     // upstream も未設定 (= まだ push されていない新規 branch) のフォールバック。
-    // - `origin/HEAD` が設定されていればそれを基準に未 push commit を数える。
-    // - それも無ければ「リモートのどのブランチからも到達できない commit が HEAD 上に
-    //   あるか」を `git rev-list HEAD --not --remotes=origin --count` で見る。
-    // 旧実装は単に `Ok(false)` を返していたため、未 push commit を見落として finalize
-    // agent が起動されず、ユーザーの成果物が黙って捨てられるバグになっていた。
+    // `origin/HEAD` が設定されていればそれを基準に未 push commit を数え、それも
+    // 無ければ remote 不到達 commit を数える。
     if let Ok(origin_head) = git_capture(&[
         "rev-parse",
         "--abbrev-ref",
@@ -207,7 +208,12 @@ fn has_publishable_commits(pr_base: Option<&str>) -> Result<bool> {
             return Ok(true);
         }
     }
+    remote_unreachable_commits()
+}
 
+/// `git rev-list HEAD --not --remotes=origin --count > 0` の判定。
+/// `merge-base` を必要としない最終フォールバック。
+fn remote_unreachable_commits() -> Result<bool> {
     let count = git_capture(&["rev-list", "HEAD", "--not", "--remotes=origin", "--count"])?;
     Ok(count.trim().parse::<u64>().unwrap_or(0) > 0)
 }

@@ -188,8 +188,19 @@ fn build_posix_agent_block(agent: &str, finalizer: Option<&str>) -> String {
 }
 
 fn build_fish_agent_block(agent: &str, finalizer: Option<&str>) -> String {
-    let pipefail = "set -l __rai_pipe $pipestatus; set -l __rai_agent_status 0; for s in $__rai_pipe; if test $s -ne 0; set __rai_agent_status $s; end; end";
-    let agent_block = format!("begin; {agent}; end; {pipefail}");
+    // 重要: fish の `$pipestatus` は **直前のパイプラインの各プロセスの exit code 列**。
+    // `begin … end` を「終わってから」 `$pipestatus` を読むと、それは `begin..end` ブロック
+    // 自体 (= 1 プロセス扱い) の 1 要素リストになってしまい、ブロック内のパイプライン
+    // 各段の失敗を拾えない (例: `ccs c1 | rai claude format` で前段が 127、後段が 0 の
+    // とき pipefail を擬似実装したい意図に反し、auto-publish が抑止できなくなる)。
+    // → `$pipestatus` のキャプチャは **必ず begin..end ブロックの中** で行う。
+    //
+    // また、ブロック内で更新した値をブロック外の `if` 判定で参照するため、`set -l`
+    // ではなく `set -g` で global にする (begin..end は scope boundary)。`set -g` の
+    // 初期化はブロックの **外側** に置く。
+    let init = "set -g __rai_agent_status 0";
+    let capture_inside = "set -l __rai_pipe $pipestatus; for s in $__rai_pipe; if test $s -ne 0; set -g __rai_agent_status $s; end; end";
+    let agent_block = format!("{init}; begin; {agent}; {capture_inside}; end");
     match finalizer {
         Some(finalizer) => format!(
             "{agent_block}; if test $__rai_agent_status -ne 0; echo \"rai: agent exited with status $__rai_agent_status; skip auto publish\" >&2; exit $__rai_agent_status; end; {finalizer}"
@@ -706,11 +717,17 @@ mod tests {
             Shell::Fish,
         );
         // fish 分岐も入出力が一意なので exact match。
+        // `$pipestatus` のキャプチャは `begin..end` の **内側** で行う必要がある
+        // (review #19): 外側で読むと block 全体の 1 要素リストに丸まり、ブロック内の
+        // パイプラインの各段の失敗が拾えない。`__rai_agent_status` はブロック内外で
+        // 共有するため `set -g` で global にしている。
         assert_eq!(
             cmd,
-            "begin; ccs c1 -- 'hello world' | '/opt/rai/rai' claude format; end; \
-             set -l __rai_pipe $pipestatus; set -l __rai_agent_status 0; \
-             for s in $__rai_pipe; if test $s -ne 0; set __rai_agent_status $s; end; end; \
+            "set -g __rai_agent_status 0; \
+             begin; ccs c1 -- 'hello world' | '/opt/rai/rai' claude format; \
+             set -l __rai_pipe $pipestatus; \
+             for s in $__rai_pipe; if test $s -ne 0; set -g __rai_agent_status $s; end; end; \
+             end; \
              if test $__rai_agent_status -ne 0; \
              echo \"rai: agent exited with status $__rai_agent_status; skip auto publish\" >&2; \
              exit $__rai_agent_status; end; rai finalize"
