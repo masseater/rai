@@ -245,13 +245,18 @@ fn build_prompt(
             .replace("{ISSUE_URL}", url)
             .replace("{ISSUE_TITLE}", title));
     }
+    // 「既に同じブランチへの PR があれば新規作成せず追加 push のみ」を両分岐に入れる。
+    // - auto_publish=true: agent と finalize agent の二重 `gh pr create` で finalize 側が
+    //   重複作成エラーになる可能性を避ける。
+    // - auto_publish=false: 既存 PR を二重に作成しない安全装置として同じ文言を入れる。
+    let no_dup_pr = "既に同じブランチへの PR があれば新規作成せず、追加 push のみ行ってください。";
     if auto_publish {
         Ok(format!(
-            "GitHub Issue {url} (`{title}`) を一気通貫で開発し、PR を出すところまで自走してください。実装したらテスト・ビルド・lint をローカルで通し、commit して push し、`gh pr create` で PR を作成します。PR 本文には `Closes {url}` を含めてください。commit-msg hook がメッセージを弾いた場合はメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
+            "GitHub Issue {url} (`{title}`) を一気通貫で開発し、PR を出すところまで自走してください。実装したらテスト・ビルド・lint をローカルで通し、commit して push し、`gh pr create` で PR を作成します。PR 本文には `Closes {url}` を含めてください。{no_dup_pr}commit-msg hook がメッセージを弾いた場合はメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
         ))
     } else {
         Ok(format!(
-            "GitHub Issue {url} (`{title}`) を一気通貫で開発し、commit、push、`gh pr create` で PR を作成するところまで自走してください。テスト・ビルド・lint をローカルで通すこと。commit-msg hook がメッセージを弾いたらメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
+            "GitHub Issue {url} (`{title}`) を一気通貫で開発し、commit、push、`gh pr create` で PR を作成するところまで自走してください。テスト・ビルド・lint をローカルで通すこと。{no_dup_pr}commit-msg hook がメッセージを弾いたらメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
         ))
     }
 }
@@ -341,6 +346,10 @@ mod tests {
         assert!(prompt.contains("commit-msg hook"));
         assert!(prompt.contains("--no-verify"));
         assert!(!prompt.contains("finalize agent"));
+        // 既存 PR との二重作成を避ける文言が auto_publish=true でも入っていること
+        // (review-7 fix)。finalize agent が後段で `gh pr create` を試みても重複
+        // エラーにならないよう、agent 側で skip を促す。
+        assert!(prompt.contains("既に同じブランチへの PR があれば新規作成せず"));
     }
 
     #[test]
@@ -354,5 +363,6 @@ mod tests {
         .unwrap();
         assert!(prompt.contains("`gh pr create`"));
         assert!(!prompt.contains("finalize agent"));
+        assert!(prompt.contains("既に同じブランチへの PR があれば新規作成せず"));
     }
 }

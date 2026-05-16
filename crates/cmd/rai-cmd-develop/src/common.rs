@@ -254,7 +254,12 @@ pub fn launch(ctx: &LaunchContext, wt: &Worktree) -> Result<()> {
     }
 
     let ts = Local::now().format("%Y%m%d-%H%M%S");
-    let session = format!("{}-{}-{}-{ts}", ctx.repo, ctx.flavor.label(), ctx.number);
+    // 防御的に `/` を `-` に正規化する。現在の呼び出し側はリポジトリ名のみを渡している
+    // (例: `rai`) が、将来 `OWNER/REPO` 形式が渡された場合に tmux session 名や log
+    // パスが破綻するのを避ける。tmux session 名は `:` も禁止だが現在の構成では出現
+    // しないので扱わない。
+    let repo_safe = ctx.repo.replace('/', "-");
+    let session = format!("{repo_safe}-{}-{}-{ts}", ctx.flavor.label(), ctx.number);
     let log_path = engine_log_path(&session)?;
     let wrapped_cmd = wrap_with_log(&full_cmd, &log_path, shell_kind);
 
@@ -270,8 +275,7 @@ pub fn launch(ctx: &LaunchContext, wt: &Worktree) -> Result<()> {
     // した上で、ユーザーシェルに 1 つのコマンドラインとして渡す。tmux が
     // shell-command を default-shell -c に内部で渡してくれるため、メタ文字は最後の
     // 1 段でだけ解釈される。
-    let (_user_shell, quote_kind) = shell::detect_user_shell();
-    let q = shell::quote_for(quote_kind);
+    let q = shell::quote_for(shell_kind);
     let tmux_cmdline = format!(
         "tmux new-session -d -s {} -c {} {}",
         q(&session),
