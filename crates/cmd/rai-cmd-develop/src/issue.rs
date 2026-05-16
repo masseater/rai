@@ -42,8 +42,22 @@ struct Issue {
 
 impl Run for Cmd {
     fn run(self, _ctx: &Ctx) -> Result<()> {
-        // `--branch` は単一 issue 専用。`resolve_issues` で CLI 引数からの複数指定と
-        // fzf 経由の複数選択を両方とも吸収するので、ここで一回チェックすれば十分。
+        // `--branch` は単一 issue 専用。
+        // 1. CLI 引数で 2 件以上渡された場合 → ここで弾く (fzf を起動せずに済む)。
+        // 2. CLI 引数が空 (= fzf モード) で `--branch` 指定 → 「fzf で何件選ばれるか
+        //    実行するまで分からない上に、ユーザーに対話的に選ばせた後で弾くのは
+        //    UX 的に最悪」なので、fzf を起動する前に弾く。
+        // 3. fzf で 2 件以上選んでしまった場合 → `resolve_issues` 後の最終チェック
+        //    (= 念のための safety net)。
+        if self.issue.len() > 1 && self.branch.is_some() {
+            bail!("--branch can only be used with a single issue");
+        }
+        if self.issue.is_empty() && self.branch.is_some() {
+            bail!(
+                "--branch cannot be combined with interactive (fzf) issue selection; \
+                 pass a single issue number or URL explicitly"
+            );
+        }
         let issues = resolve_issues(&self)?;
         if issues.len() > 1 && self.branch.is_some() {
             bail!("--branch can only be used with a single issue");
@@ -340,16 +354,12 @@ mod tests {
             true,
         )
         .unwrap();
-        assert!(prompt.contains("PR を出すところまで自走"));
-        assert!(prompt.contains("`gh pr create`"));
-        assert!(prompt.contains("Closes https://github.com/o/r/issues/13"));
-        assert!(prompt.contains("commit-msg hook"));
-        assert!(prompt.contains("--no-verify"));
-        assert!(!prompt.contains("finalize agent"));
-        // 既存 PR との二重作成を避ける文言が auto_publish=true でも入っていること
-        // (review-7 fix)。finalize agent が後段で `gh pr create` を試みても重複
-        // エラーにならないよう、agent 側で skip を促す。
-        assert!(prompt.contains("既に同じブランチへの PR があれば新規作成せず"));
+        // build_prompt の戻り値は引数から一意に決まるので、AGENTS.md のテスト
+        // ガイドラインに従って完全一致で検証する。
+        assert_eq!(
+            prompt,
+            "GitHub Issue https://github.com/o/r/issues/13 (`Auto publish`) を一気通貫で開発し、PR を出すところまで自走してください。実装したらテスト・ビルド・lint をローカルで通し、commit して push し、`gh pr create` で PR を作成します。PR 本文には `Closes https://github.com/o/r/issues/13` を含めてください。既に同じブランチへの PR があれば新規作成せず、追加 push のみ行ってください。commit-msg hook がメッセージを弾いた場合はメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
+        );
     }
 
     #[test]
@@ -361,8 +371,9 @@ mod tests {
             false,
         )
         .unwrap();
-        assert!(prompt.contains("`gh pr create`"));
-        assert!(!prompt.contains("finalize agent"));
-        assert!(prompt.contains("既に同じブランチへの PR があれば新規作成せず"));
+        assert_eq!(
+            prompt,
+            "GitHub Issue https://github.com/o/r/issues/13 (`Manual publish`) を一気通貫で開発し、commit、push、`gh pr create` で PR を作成するところまで自走してください。テスト・ビルド・lint をローカルで通すこと。既に同じブランチへの PR があれば新規作成せず、追加 push のみ行ってください。commit-msg hook がメッセージを弾いたらメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
+        );
     }
 }

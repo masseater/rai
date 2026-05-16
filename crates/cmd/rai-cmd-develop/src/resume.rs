@@ -304,8 +304,11 @@ fn issue_resume_prompt(url: &str, title: &str, branch: &str, auto_publish: bool)
 `gh pr create` で PR を作成 (PR 本文に `Closes {url}`)。\
 既に同じブランチへの PR があれば新規作成せず、追加 push のみ行ってください。"
     } else {
-        "残作業を仕上げて **agent 自身** で PR 作成まで完結させてください\
- (`--no-auto-publish` 指定のため rai 側は後段の finalize agent を起動しません)。\
+        // Rust の行継続 `\<newline>` は次行の先頭空白も食うので、`(` は **行末側** に
+        // 置いて改行前にスペース + `(` をまとめておく。これで生成プロンプトは
+        // `完結させてください (`--no-auto-publish`…` と自然な間隔になる。
+        "残作業を仕上げて **agent 自身** で PR 作成まで完結させてください (\
+`--no-auto-publish` 指定のため rai 側は後段の finalize agent を起動しません)。\
 テスト・ビルド・lint をローカルで通し、commit & push、\
 `gh pr create` で PR を作成 (PR 本文に `Closes {url}`)。\
 既に同じブランチへの PR があれば新規作成せず、追加 push のみ行ってください。"
@@ -395,58 +398,39 @@ mod tests {
     }
 
     #[test]
-    fn issue_resume_prompt_directs_inspection_and_publish() {
+    fn issue_resume_prompt_auto_publish_true() {
         let p = issue_resume_prompt(
             "https://github.com/o/r/issues/9",
             "Resume me",
             "develop/issue-9-resume-me-20260504-101010",
             true,
         );
-        assert!(p.contains("途中から"));
-        assert!(p.contains("git status"));
-        assert!(p.contains("git log --oneline -20"));
-        assert!(p.contains("Closes https://github.com/o/r/issues/9"));
-        assert!(p.contains("--no-verify"));
-        assert!(!p.contains("finalize agent"));
+        assert_eq!(
+            p,
+            "GitHub Issue https://github.com/o/r/issues/9 (`Resume me`) の作業を **途中から** 再開してください。worktree のブランチは `develop/issue-9-resume-me-20260504-101010`。前回のセッションは rate limit / context limit / tmux 事故などで途中終了しています。最初に必ず `git status` と `git log --oneline -20` で現在の進捗 (未コミット変更・既存 commit) を把握し、未コミット変更があれば論理的な単位で commit を整えながら、残作業を仕上げて PR を出すところまで完了させてください。テスト・ビルド・lint をローカルで通し、commit & push、`gh pr create` で PR を作成 (PR 本文に `Closes https://github.com/o/r/issues/9`)。既に同じブランチへの PR があれば新規作成せず、追加 push のみ行ってください。commit-msg hook がメッセージを弾いた場合はメッセージを直して再 commit してください。`--no-verify` 等の hook 回避は禁止です。"
+        );
     }
 
     #[test]
-    fn issue_resume_prompt_no_auto_publish_tells_agent_to_finish_pr_itself() {
+    fn issue_resume_prompt_auto_publish_false_tells_agent_to_finish_pr_itself() {
         let p = issue_resume_prompt(
             "https://github.com/o/r/issues/9",
             "Resume me",
             "develop/issue-9-resume-me-20260504-101010",
             false,
         );
-        // auto_publish=false → rai の finalize agent は起動しないことを agent に伝えつつ、
-        // agent 自身が PR 作成まで完結する責務を負わせる文言が入る。
-        assert!(p.contains("--no-auto-publish"));
-        assert!(p.contains("agent 自身"));
-        // 通常パスと同様、PR 作成自体は依然として指示される。
-        assert!(p.contains("Closes https://github.com/o/r/issues/9"));
-    }
-
-    #[test]
-    fn issue_resume_prompt_auto_publish_does_not_mention_no_auto_publish_clause() {
-        let p = issue_resume_prompt(
-            "https://github.com/o/r/issues/9",
-            "Resume me",
-            "develop/issue-9-resume-me-20260504-101010",
-            true,
+        assert_eq!(
+            p,
+            "GitHub Issue https://github.com/o/r/issues/9 (`Resume me`) の作業を **途中から** 再開してください。worktree のブランチは `develop/issue-9-resume-me-20260504-101010`。前回のセッションは rate limit / context limit / tmux 事故などで途中終了しています。最初に必ず `git status` と `git log --oneline -20` で現在の進捗 (未コミット変更・既存 commit) を把握し、未コミット変更があれば論理的な単位で commit を整えながら、残作業を仕上げて **agent 自身** で PR 作成まで完結させてください (`--no-auto-publish` 指定のため rai 側は後段の finalize agent を起動しません)。テスト・ビルド・lint をローカルで通し、commit & push、`gh pr create` で PR を作成 (PR 本文に `Closes https://github.com/o/r/issues/9`)。既に同じブランチへの PR があれば新規作成せず、追加 push のみ行ってください。commit-msg hook がメッセージを弾いた場合はメッセージを直して再 commit してください。`--no-verify` 等の hook 回避は禁止です。"
         );
-        // auto_publish=true の通常パスでは `--no-auto-publish` についての但し書きが
-        // 入らない (= ふたつの分岐が確かに別物になっている)。
-        assert!(!p.contains("--no-auto-publish"));
     }
 
     #[test]
     fn pr_resume_prompt_forbids_new_pr() {
         let p = pr_resume_prompt("https://github.com/o/r/pull/42", "Fix CI", "feature/x", 42);
-        assert!(p.contains("途中から"));
-        assert!(p.contains("git status"));
-        assert!(p.contains("gh pr view 42"));
-        assert!(p.contains("git push origin HEAD:feature/x"));
-        assert!(p.contains("新規 PR は作成しないでください"));
-        assert!(p.contains("--no-verify"));
+        assert_eq!(
+            p,
+            "GitHub PR https://github.com/o/r/pull/42 (`Fix CI`) の作業を **途中から** 再開してください。worktree のブランチは `feature/x`。前回のセッションは rate limit / context limit / tmux 事故などで途中終了しています。最初に `git status`, `git log --oneline -20` で worktree の進捗を確認し、`gh pr view 42` / `gh pr checks 42` で PR の最新状態 (mergeable, CI) も確認してください。コンフリクト解消や CI 失敗修正など残作業を仕上げ、commit & `git push origin HEAD:feature/x` で同じ PR ブランチに反映してください。**新規 PR は作成しないでください**。既存 PR への追加 push が前提です。commit-msg hook がメッセージを弾いた場合はメッセージを直して再 commit してください。`--no-verify` 等の hook 回避は禁止です。"
+        );
     }
 }
