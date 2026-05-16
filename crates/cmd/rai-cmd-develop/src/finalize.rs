@@ -310,18 +310,20 @@ mod tests {
     #[test]
     fn issue_finalize_prompt_includes_pr_creation() {
         let p = build_finalize_prompt(&sample(Flavor::Issue), true, true);
-        assert!(p.contains("Closes https://github.com/o/r/issues/13"));
-        assert!(p.contains("`gh pr create`"));
-        assert!(p.contains("--no-verify"));
-        assert!(p.contains("base を `main`"));
+        // build_finalize_prompt の出力は入力から一意。AGENTS.md Testing ガイドライン
+        // に従い完全一致で検証する。
+        assert_eq!(
+            p,
+            "GitHub Issue https://github.com/o/r/issues/13 (`T`) の現在の作業状態を確認し、commit、push、PR の作成まで仕上げてください。worktree のブランチは `feat/x` で、現在 未コミットの変更と未 push の commit が両方残っています。未コミット変更があれば論理的な単位で commit し、`git push -u origin HEAD:feat/x` で push したあと、リポジトリ `o/r` に対して `gh pr create` で PR を作成してください。本文には `Closes https://github.com/o/r/issues/13` を含めること。既に同じブランチに PR がある場合は新規作成せず、その URL を表示するだけで終わってください。 PR を作成する際は base を `main` にしてください。 commit-msg hook がメッセージを弾いた場合はメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
+        );
     }
 
     #[test]
     fn pr_finalize_prompt_forbids_new_pr_creation() {
         let p = build_finalize_prompt(&sample(Flavor::Pr), false, true);
-        assert!(p.contains("新規 PR は作成しないでください"));
-        assert!(!p.contains("`gh pr create`"));
-        assert!(p.contains("git push origin HEAD:feat/x"));
-        assert!(p.contains("--no-verify"));
+        assert_eq!(
+            p,
+            "GitHub PR https://github.com/o/r/issues/13 (`T`) の現在の作業状態を確認し、commit、push まで仕上げてください。worktree のブランチは `feat/x` で、現在 未 push の commit が残っています。未コミット変更があれば論理的な単位で commit し、`git push origin HEAD:feat/x` で同じ PR ブランチに push してください。**新規 PR は作成しないでください**。既存 PR への追加 push が前提です。commit-msg hook がメッセージを弾いた場合はメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
+        );
     }
 }

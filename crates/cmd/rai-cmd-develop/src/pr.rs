@@ -438,10 +438,12 @@ mod tests {
     fn prompt_calls_out_conflict_when_pr_is_conflicting() {
         let pr = sample_pr("CONFLICTING", Vec::new());
         let prompt = build_prompt(None, &pr).unwrap();
-        assert!(prompt.contains("コンフリクトしています"));
-        assert!(prompt.contains("origin/main"));
-        assert!(prompt.contains("--no-verify"));
-        assert!(prompt.contains("新規 PR は作成しないでください"));
+        // build_prompt の出力は入力から一意に決まるので、AGENTS.md の Testing
+        // ガイドラインに従って完全一致で検証する。
+        assert_eq!(
+            prompt,
+            "PR https://github.com/o/r/pull/42 (`Fix stuff`) について、以下を実施してください:\n- このブランチは base `main` とコンフリクトしています。`git fetch origin main` のあと `git merge origin/main` (または `git rebase origin/main`) でコンフリクトを解消し、各ファイルの解消結果が PR の意図に沿っているかを確認してから commit してください。\n- 修正内容をテスト・ビルド・lint でローカル検証し、commit & `git push` で同じブランチに反映してください。\n- commit-msg hook がメッセージを弾いた場合は直して再 commit すること。`--no-verify` 等の hook 回避は禁止です。\n- 新規 PR は作成しないでください。既存 PR への追加 push が前提です。"
+        );
     }
 
     #[test]
@@ -462,17 +464,20 @@ mod tests {
             ],
         );
         let prompt = build_prompt(None, &pr).unwrap();
-        assert!(prompt.contains("CI ジョブが失敗"));
-        assert!(prompt.contains("`ci/test`"));
-        assert!(prompt.contains("https://example/jobs/1"));
-        assert!(prompt.contains("`ci/lint`"));
+        assert_eq!(
+            prompt,
+            "PR https://github.com/o/r/pull/42 (`Fix stuff`) について、以下を実施してください:\n- 以下の CI ジョブが失敗しています。失敗ログを `gh run view --log-failed` 等で取得し、根本原因を修正してください:\n  - `ci/test` (FAILURE): https://example/jobs/1\n  - `ci/lint` (FAILURE)\n- 修正内容をテスト・ビルド・lint でローカル検証し、commit & `git push` で同じブランチに反映してください。\n- commit-msg hook がメッセージを弾いた場合は直して再 commit すること。`--no-verify` 等の hook 回避は禁止です。\n- 新規 PR は作成しないでください。既存 PR への追加 push が前提です。"
+        );
     }
 
     #[test]
     fn prompt_falls_back_when_nothing_to_do() {
         let pr = sample_pr("MERGEABLE", Vec::new());
         let prompt = build_prompt(None, &pr).unwrap();
-        assert!(prompt.contains("コンフリクトも CI 失敗も検出されていません"));
+        assert_eq!(
+            prompt,
+            "PR https://github.com/o/r/pull/42 (`Fix stuff`) は現状コンフリクトも CI 失敗も検出されていません。レビューコメントなど他の指摘があれば対応し、必要なら追加 commit を push してください。"
+        );
     }
 
     #[test]
