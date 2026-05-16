@@ -151,29 +151,32 @@ fn is_fork(pr: &Pr, base_owner: &str) -> bool {
 }
 
 fn ensure_local_branch_tracking_origin(branch: &str) -> Result<()> {
-    // 1. Fetch latest remote ref so origin/<branch> is up-to-date.
-    let st = shell::user_shell_argv(&["git", "fetch", "origin", branch])
+    // spec `docs/specs/18-develop.md` の指定どおり、refspec 付きで fetch する。
+    // 旧実装は `git fetch origin <branch>` → `git branch --track <branch> origin/<branch>`
+    // の 2 段だったが、`git fetch origin <branch>` は `FETCH_HEAD` を更新するだけで
+    // `refs/remotes/origin/<branch>` が更新される保証がない (`remote.origin.fetch` の
+    // refspec 設定や shallow clone 環境で 2 段目が失敗する)。refspec 形 (`<ref>:<ref>`)
+    // でローカル `refs/heads/<branch>` に直接取り込めば、remote-tracking ref に依存
+    // しないし、既存ローカルブランチは fast-forward / non-fast-forward 判定で扱える。
+    // - 既存ローカルブランチが既に最新 or 親子関係 → fast-forward で更新成功
+    // - 既存ローカルブランチが乖離 → fetch は non-fast-forward で失敗。`gwq add` +
+    //   `git pull --rebase` 側で reconcile されるので、ここでは失敗を無視する。
+    let refspec = format!("{branch}:{branch}");
+    let st = shell::user_shell_argv(&["git", "fetch", "origin", &refspec])
         .status()
-        .with_context(|| format!("failed to spawn `git fetch origin {branch}`"))?;
-    if !st.success() {
-        bail!("`git fetch origin {branch}` failed");
+        .with_context(|| format!("failed to spawn `git fetch origin {refspec}`"))?;
+    if st.success() {
+        return Ok(());
     }
-
-    // 2. If local branch already exists, leave it alone — `gwq add` + `git pull --rebase`
-    //    on the worktree side will reconcile.
+    // refspec fetch が失敗 (= 既存ブランチが non-fast-forward 等) しても、ローカル
+    // ブランチが既にあれば worktree 作成側の `git pull --rebase` で reconcile される。
     if local_branch_exists(branch)? {
         return Ok(());
     }
-
-    // 3. Otherwise create a tracking branch from the remote ref.
-    let upstream = format!("origin/{branch}");
-    let st = shell::user_shell_argv(&["git", "branch", "--track", branch, &upstream])
-        .status()
-        .with_context(|| format!("failed to spawn `git branch --track {branch} {upstream}`"))?;
-    if !st.success() {
-        bail!("`git branch --track {branch} {upstream}` failed");
-    }
-    Ok(())
+    bail!(
+        "`git fetch origin {refspec}` failed and no local branch `{branch}` exists; \
+         either fetch manually or remove the diverged local branch."
+    )
 }
 
 fn local_branch_exists(branch: &str) -> Result<bool> {
