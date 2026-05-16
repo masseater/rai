@@ -326,6 +326,9 @@ fn execute_in_tmux(argv: &[String], marker_dir: &Path, session_id: &str) -> Resu
     );
 
     // sentinel をポーリング。claude の完了を待つだけで、tmux session は触らない。
+    // NotFound の場合は tmux session の生存も同時にチェックし、session が消えていれば
+    // (= OOM / SIGKILL / 手動 kill 等で claude が完了前に死んだ) bail する。これが
+    // 無いと sentinel が永遠に出ない場合に `rai claude print` が無限ハングする。
     loop {
         match fs::read_to_string(&sentinel) {
             Ok(s) => {
@@ -335,13 +338,35 @@ fn execute_in_tmux(argv: &[String], marker_dir: &Path, session_id: &str) -> Resu
                     return Ok(code);
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if !tmux_has_session(&tmux_session)? {
+                    bail!(
+                        "tmux session '{tmux_session}' disappeared before claude wrote \
+                         its exit code to {sentinel_path}. claude was likely killed \
+                         (SIGKILL / OOM / manual kill) before completing. \
+                         Inspect `tmux ls` and remove the marker {marker} if you want \
+                         to retry with a fresh --session-id.",
+                        sentinel_path = sentinel.display(),
+                        marker = marker_dir.join(session_id).display(),
+                    );
+                }
+            }
             Err(e) => {
                 return Err(e).with_context(|| format!("read sentinel {}", sentinel.display()))
             }
         }
         std::thread::sleep(Duration::from_millis(200));
     }
+}
+
+/// `tmux has-session -t <name>` でセッションの生存を確認する。tmux 経由なので
+/// ユーザーシェル (`user_shell_argv`) 越しに呼ぶ (rai 全体の shell ポリシーに準拠)。
+fn tmux_has_session(name: &str) -> Result<bool> {
+    let status = shell::user_shell_argv(&["tmux", "has-session", "-t", name])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .with_context(|| format!("failed to spawn `tmux has-session -t {name}`"))?;
+    Ok(status.success())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -761,24 +786,21 @@ mod tests {
         G(path)
     }
 
-    /// `which tmux` で tmux が PATH 上にあるかだけを確認するヘルパ。
+    /// `tmux -V` で tmux が PATH 上にあるかを確認するヘルパ。本番コードと揃えて
+    /// ユーザーシェル経由で起動する (`Command::new("tmux")` 直叩きは shell policy 違反)。
     fn tmux_available() -> bool {
-        std::process::Command::new("tmux")
-            .arg("-V")
+        shell::user_shell_argv(&["tmux", "-V"])
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
     }
 
-    /// テスト終了時に「rai-claude-print-...」プレフィックスのテスト用 tmux session を
-    /// 全部 kill するガード。テスト失敗時の取り残しを防ぐ。
+    /// テスト終了時に対象 tmux session を kill するガード。テスト失敗時の取り残しを防ぐ。
     fn tmux_session_guard(name: String) -> impl Drop {
         struct G(String);
         impl Drop for G {
             fn drop(&mut self) {
-                let _ = std::process::Command::new("tmux")
-                    .args(["kill-session", "-t", &self.0])
-                    .output();
+                let _ = shell::user_shell_argv(&["tmux", "kill-session", "-t", &self.0]).output();
             }
         }
         G(name)
@@ -864,8 +886,8 @@ mod tests {
         let _session_kill_guard = tmux_session_guard(tmux_session.clone());
 
         // tmux ls にその session 名が含まれている = print 終了後も session が残っている。
-        let ls_out = std::process::Command::new("tmux")
-            .args(["ls", "-F", "#S"])
+        // ユーザーシェル経由 (rai 全体の shell policy に準拠)。
+        let ls_out = shell::user_shell_argv(&["tmux", "ls", "-F", "#S"])
             .output()
             .expect("tmux ls");
         let ls_stdout = String::from_utf8_lossy(&ls_out.stdout);
@@ -881,8 +903,7 @@ mod tests {
         // 子プロセスを wait() しているため "fish" のままになるので、コマンド名では
         // なく **session の生存** だけを最終確認にする。
         std::thread::sleep(Duration::from_secs(1));
-        let ls_after = std::process::Command::new("tmux")
-            .args(["ls", "-F", "#S"])
+        let ls_after = shell::user_shell_argv(&["tmux", "ls", "-F", "#S"])
             .output()
             .expect("tmux ls (after wait)");
         let ls_after_stdout = String::from_utf8_lossy(&ls_after.stdout);
@@ -891,6 +912,46 @@ mod tests {
             "tmux session '{tmux_session}' must still exist 1s after claude exited \
              (stdout={ls_after_stdout:?}). claude exit was sentinel-confirmed, so a missing \
              session here means the hold-after-exit logic broke."
+        );
+    }
+
+    /// `tmux_has_session` のスモークテスト: 起動した session の有無で true/false が
+    /// 切り替わることだけを確認する。tmux 経由ポリシーに準拠した起動になっていること
+    /// 自体は `tmux_session_guard` も同じ helper を使っているので間接的に検証される。
+    #[cfg(unix)]
+    #[test]
+    fn tmux_has_session_returns_true_only_when_session_exists() {
+        if !tmux_available() {
+            eprintln!("tmux not installed; skipping tmux_has_session test");
+            return;
+        }
+        let name = format!(
+            "rai-claude-print-test-has-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        assert!(
+            !tmux_has_session(&name).unwrap(),
+            "session that was never created must not exist"
+        );
+        let create = shell::user_shell_argv(&[
+            "tmux",
+            "new-session",
+            "-d",
+            "-s",
+            name.as_str(),
+            "tail -f /dev/null",
+        ])
+        .status()
+        .expect("tmux new-session");
+        assert!(create.success(), "tmux new-session must succeed");
+        let _kill_guard = tmux_session_guard(name.clone());
+        assert!(
+            tmux_has_session(&name).unwrap(),
+            "just-created session must be reported as existing"
         );
     }
 }

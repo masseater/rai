@@ -117,18 +117,44 @@ pub fn read_prompt_template(path: &Path) -> Result<String> {
 }
 
 pub fn build_engine_cmd(engine_cmd: &str, permission_mode: Option<PermissionMode>) -> String {
-    let flag = match permission_mode {
-        Some(mode) => format!("--permission-mode {}", mode.as_arg()),
-        None => String::new(),
-    };
     if engine_cmd.contains("{PERMISSION_MODE}") {
-        return engine_cmd.replace("{PERMISSION_MODE}", &flag);
+        // `--verbose {PERMISSION_MODE} -- …` のようにプレースホルダの前後にスペースが
+        // 入っているテンプレートで、permission_mode = None のとき素朴に空文字へ置換
+        // すると `--verbose  -- …` のように二重スペースが残る。連続するスペースを
+        // 単一に正規化してから返す。
+        let replaced = match permission_mode {
+            Some(mode) => engine_cmd.replace(
+                "{PERMISSION_MODE}",
+                &format!("--permission-mode {}", mode.as_arg()),
+            ),
+            None => collapse_spaces(&engine_cmd.replace("{PERMISSION_MODE}", "")),
+        };
+        return replaced;
     }
     if let Some(mode) = permission_mode {
         format!("{engine_cmd} --permission-mode {}", mode.as_arg())
     } else {
         engine_cmd.to_string()
     }
+}
+
+/// 連続するスペースを 1 つに畳む。`--verbose  -- foo` → `--verbose -- foo`。
+/// `{PERMISSION_MODE}` を空に置換した直後のクリーンアップ専用。改行は保持する。
+fn collapse_spaces(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_space = false;
+    for ch in s.chars() {
+        if ch == ' ' {
+            if !prev_space {
+                out.push(' ');
+            }
+            prev_space = true;
+        } else {
+            out.push(ch);
+            prev_space = false;
+        }
+    }
+    out
 }
 
 pub fn build_agent_shell_command(
@@ -619,6 +645,28 @@ mod tests {
             "claude --permission-mode bypassPermissions"
         );
         assert_eq!(build_engine_cmd("claude", None), "claude");
+    }
+
+    #[test]
+    fn build_engine_cmd_no_permission_mode_collapses_double_spaces_around_placeholder() {
+        // デフォルト DEFAULT_ENGINE_CMD と同じ形 (--verbose の直後にプレースホルダが
+        // あり、その後 -- が続く) で `permission_mode = None` のとき、二重スペースを
+        // 残さない。
+        assert_eq!(
+            build_engine_cmd(
+                "ccs c1 --print --output-format stream-json --verbose {PERMISSION_MODE} -- {PROMPT}",
+                None,
+            ),
+            "ccs c1 --print --output-format stream-json --verbose -- {PROMPT}"
+        );
+    }
+
+    #[test]
+    fn collapse_spaces_squashes_runs_but_preserves_newlines() {
+        assert_eq!(collapse_spaces("a  b   c"), "a b c");
+        assert_eq!(collapse_spaces("a\n\nb"), "a\n\nb");
+        assert_eq!(collapse_spaces("  leading"), " leading");
+        assert_eq!(collapse_spaces("trailing  "), "trailing ");
     }
 
     #[test]
