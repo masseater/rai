@@ -124,8 +124,12 @@ fn ensure_local_branch_tracking_origin(branch: &str) -> Result<()> {
     if st.success() {
         return Ok(());
     }
-    // refspec fetch が失敗 (= 既存ブランチが non-fast-forward 等) しても、ローカル
-    // ブランチが既にあれば worktree 作成側の `git pull --rebase` で reconcile される。
+    // refspec fetch が失敗するのは典型的には「既存ローカルブランチが remote と乖離して
+    // non-fast-forward になっている」ケース。後段の worktree 作成 (`ensure_worktree`)
+    // が `git pull --rebase` を回すので、upstream が設定されているならそこで reconcile
+    // が試みられる。upstream 未設定の場合は `git pull --rebase` が
+    // `fatal: no tracking information` で非ゼロ終了し、エラーがユーザーに伝搬される
+    // (= サイレントに整合性を失わない fail-safe な挙動)。
     if local_branch_exists(branch)? {
         return Ok(());
     }

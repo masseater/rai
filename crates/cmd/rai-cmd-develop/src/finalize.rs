@@ -288,7 +288,15 @@ pub(crate) fn local_origin_head_branch() -> Option<String> {
         return None;
     }
     let branch = String::from_utf8_lossy(&out.stdout);
-    let branch = branch.trim().strip_prefix("origin/")?;
+    let trimmed = branch.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // `git symbolic-ref --short refs/remotes/origin/HEAD` は通常 `origin/main` のように
+    // remote 名つきで返るが、リポジトリ構成 (`remote.origin.fetch` の refspec 設定や
+    // mirror 構成) によっては `main` 単体で返る場合がある。`strip_prefix` の結果が
+    // `None` でも、それは生のブランチ名がそのまま入っているケースなのでそのまま採用。
+    let branch = trimmed.strip_prefix("origin/").unwrap_or(trimmed);
     Some(branch.to_string())
 }
 

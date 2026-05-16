@@ -313,10 +313,23 @@ pub fn launch(ctx: &LaunchContext, wt: &Worktree) -> Result<()> {
 }
 
 pub fn rollback_worktree(branch: &str) {
+    // `cleanup_empty_worktree` と同じ流儀で、spawn 失敗 / 非ゼロ終了の両ケースを
+    // 個別にログする。tmux 起動が失敗したうえに worktree のロールバックも失敗した
+    // 場合、ユーザーは取り残された worktree を手動でクリーンアップする必要がある
+    // ので、何が起きたかを stderr に出しておく。
     eprintln!("tmux start failed; rolling back worktree");
-    shell::user_shell_argv(&["gwq", "remove", "--force", branch])
-        .status()
-        .ok();
+    match shell::user_shell_argv(&["gwq", "remove", "--force", branch]).status() {
+        Ok(s) if s.success() => {}
+        Ok(s) => eprintln!(
+            "rai: rollback `gwq remove --force {branch}` exited with {:?}; \
+             you may need to clean up the worktree manually.",
+            s.code()
+        ),
+        Err(e) => eprintln!(
+            "rai: rollback `gwq remove --force {branch}` failed to spawn: {e}; \
+             you may need to clean up the worktree manually."
+        ),
+    }
 }
 
 fn tmux_has_session(session: &str) -> bool {
