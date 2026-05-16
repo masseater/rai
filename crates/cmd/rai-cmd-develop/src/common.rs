@@ -18,6 +18,22 @@ use serde::Deserialize;
 
 pub const DEFAULT_ENGINE_CMD: &str = "ccs c1 --print --output-format stream-json --verbose {PERMISSION_MODE} -- {PROMPT} | {RAI} claude format";
 
+/// ユーザーが対話 UI (fzf 等) で操作をキャンセルしたことを示すエラー型。
+/// `Result` の Err として返し、`rai` のトップレベルが downcast して exit 130 で
+/// 終了する。`std::process::exit` を直接呼ぶ実装は Result の destructors を
+/// 巻き戻さないため、ここでは `bail!(UserCancelled)` に倒して呼び出し側のクリーン
+/// アップを保証する。
+#[derive(Debug)]
+pub struct UserCancelled;
+
+impl std::fmt::Display for UserCancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("user cancelled")
+    }
+}
+
+impl std::error::Error for UserCancelled {}
+
 /// `rai develop {issue,pr}` 共通の agent 起動関連オプション。
 #[derive(Debug, Args, Clone)]
 pub struct AgentArgs {
@@ -50,34 +66,9 @@ pub struct AgentArgs {
     pub permission_mode: Option<PermissionMode>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum PermissionMode {
-    #[value(name = "acceptEdits")]
-    AcceptEdits,
-    #[value(name = "auto")]
-    Auto,
-    #[value(name = "bypassPermissions")]
-    BypassPermissions,
-    #[value(name = "default")]
-    Default,
-    #[value(name = "dontAsk")]
-    DontAsk,
-    #[value(name = "plan")]
-    Plan,
-}
-
-impl PermissionMode {
-    pub fn as_arg(self) -> &'static str {
-        match self {
-            Self::AcceptEdits => "acceptEdits",
-            Self::Auto => "auto",
-            Self::BypassPermissions => "bypassPermissions",
-            Self::Default => "default",
-            Self::DontAsk => "dontAsk",
-            Self::Plan => "plan",
-        }
-    }
-}
+// `--permission-mode` の共通型は rai-core::claude に置いてある (旧実装で
+// rai-cmd-claude と enum 定義が重複していたのを統合)。
+pub use rai_core::claude::PermissionMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Flavor {
@@ -117,18 +108,48 @@ pub fn read_prompt_template(path: &Path) -> Result<String> {
 }
 
 pub fn build_engine_cmd(engine_cmd: &str, permission_mode: Option<PermissionMode>) -> String {
-    let flag = match permission_mode {
-        Some(mode) => format!("--permission-mode {}", mode.as_arg()),
-        None => String::new(),
-    };
     if engine_cmd.contains("{PERMISSION_MODE}") {
-        return engine_cmd.replace("{PERMISSION_MODE}", &flag);
+        // `--verbose {PERMISSION_MODE} -- …` のようにプレースホルダの前後にスペースが
+        // 入っているテンプレートで、permission_mode = None のとき素朴に空文字へ置換
+        // すると `--verbose  -- …` のように二重スペースが残る。連続するスペースを
+        // 単一に正規化したうえで、行頭にプレースホルダがあった場合に残る先頭スペースも
+        // `trim_start` で取り除いてから返す (例: `{PERMISSION_MODE} ccs c1 -- …` で
+        // permission_mode=None なら ` ccs c1 -- …` → `ccs c1 -- …`)。
+        // `Some` 側でも、ユーザーがプレースホルダの前後にタブ・連続スペースを
+        // 入れたカスタムテンプレを使った場合に余計な空白が残らないよう、`None` 側と
+        // 同じ正規化 (`collapse_spaces` + `trim_start`) を通す。
+        let replacement = match permission_mode {
+            Some(mode) => format!("--permission-mode {}", mode.as_arg()),
+            None => String::new(),
+        };
+        return collapse_spaces(&engine_cmd.replace("{PERMISSION_MODE}", &replacement))
+            .trim_start()
+            .to_string();
     }
     if let Some(mode) = permission_mode {
         format!("{engine_cmd} --permission-mode {}", mode.as_arg())
     } else {
         engine_cmd.to_string()
     }
+}
+
+/// 連続するスペースを 1 つに畳む。`--verbose  -- foo` → `--verbose -- foo`。
+/// `{PERMISSION_MODE}` を空に置換した直後のクリーンアップ専用。改行は保持する。
+fn collapse_spaces(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_space = false;
+    for ch in s.chars() {
+        if ch == ' ' {
+            if !prev_space {
+                out.push(' ');
+            }
+            prev_space = true;
+        } else {
+            out.push(ch);
+            prev_space = false;
+        }
+    }
+    out
 }
 
 pub fn build_agent_shell_command(
@@ -139,13 +160,16 @@ pub fn build_agent_shell_command(
     shell_kind: Shell,
 ) -> String {
     let quote = shell::quote_for(shell_kind);
-    let has_placeholder = engine_cmd.contains("{PROMPT}") || engine_cmd.contains("{RAI}");
-    let agent = if has_placeholder {
-        engine_cmd
-            .replace("{PROMPT}", &quote(prompt))
-            .replace("{RAI}", &quote(rai_exe))
+    // `{PROMPT}` プレースホルダの有無だけで「テンプレ模式 vs legacy append 模式」を
+    // 切り替える。`{RAI}` は legacy append でも同じく置換しておく。以前は
+    // `{PROMPT} || {RAI}` のいずれかがあれば placeholder 模式に倒していたため、
+    // `--engine-cmd 'my-cmd {RAI}'` のような prompt を含まないテンプレートを与えると
+    // プロンプトが本文に入らないバグになっていた。
+    let with_rai = engine_cmd.replace("{RAI}", &quote(rai_exe));
+    let agent = if with_rai.contains("{PROMPT}") {
+        with_rai.replace("{PROMPT}", &quote(prompt))
     } else {
-        format!("{} {}", engine_cmd, quote(prompt))
+        format!("{} {}", with_rai, quote(prompt))
     };
     match shell_kind {
         Shell::Posix => build_posix_agent_block(&agent, finalizer),
@@ -164,8 +188,22 @@ fn build_posix_agent_block(agent: &str, finalizer: Option<&str>) -> String {
 }
 
 fn build_fish_agent_block(agent: &str, finalizer: Option<&str>) -> String {
-    let pipefail = "set -l __rai_pipe $pipestatus; set -l __rai_agent_status 0; for s in $__rai_pipe; if test $s -ne 0; set __rai_agent_status $s; end; end";
-    let agent_block = format!("begin; {agent}; end; {pipefail}");
+    // 重要: fish の `$pipestatus` は **直前のパイプラインの各プロセスの exit code 列**。
+    // `begin … end` を「終わってから」 `$pipestatus` を読むと、それは `begin..end` ブロック
+    // 自体 (= 1 プロセス扱い) の 1 要素リストになってしまい、ブロック内のパイプライン
+    // 各段の失敗を拾えない (例: `ccs c1 | rai claude format` で前段が 127、後段が 0 の
+    // とき pipefail を擬似実装したい意図に反し、auto-publish が抑止できなくなる)。
+    // → `$pipestatus` のキャプチャは **必ず begin..end ブロックの中** で行う。
+    //
+    // また、ブロック内で更新した値をブロック外の `if` 判定で参照するため、`set -l`
+    // ではなく `set -g` で global にする (begin..end は scope boundary)。`set -g` の
+    // 初期化はブロックの **外側** に置く。
+    let init = "set -g __rai_agent_status 0";
+    // AGENTS.md / gotchas.md は「最悪値 (= 最大の exit code)」を採用するよう要求して
+    // いる。「最後の非ゼロ値」だと pipeline = [127, 0, 1] のときに 1 が残ってしまい、
+    // 致命度の高い 127 (= command not found) を取りこぼす。`-gt` で MAX を選ぶ。
+    let capture_inside = "set -l __rai_pipe $pipestatus; for s in $__rai_pipe; if test $s -gt $__rai_agent_status; set -g __rai_agent_status $s; end; end";
+    let agent_block = format!("{init}; begin; {agent}; {capture_inside}; end");
     match finalizer {
         Some(finalizer) => format!(
             "{agent_block}; if test $__rai_agent_status -ne 0; echo \"rai: agent exited with status $__rai_agent_status; skip auto publish\" >&2; exit $__rai_agent_status; end; {finalizer}"
@@ -190,6 +228,10 @@ pub fn engine_log_path(session: &str) -> Result<PathBuf> {
 }
 
 pub fn launch(ctx: &LaunchContext, wt: &Worktree) -> Result<()> {
+    // `run_one` 側でも `detect_user_shell()` を呼んでいるが、`$SHELL` の読み取りは
+    // プロセス内で値が変わらない (= 同じ結果が返る) ので 2 回呼んでも齟齬は出ない。
+    // ここで再取得しているのは、`launch` を `run_one` 以外から呼んだ場合や、将来
+    // `LaunchContext` に shell info を載せない設計判断を維持するため。
     let (shell_path, shell_kind) = shell::detect_user_shell();
     let exe = std::env::current_exe().context("failed to resolve current executable")?;
     let rai_exe = exe.display().to_string();
@@ -209,28 +251,43 @@ pub fn launch(ctx: &LaunchContext, wt: &Worktree) -> Result<()> {
     }
 
     let ts = Local::now().format("%Y%m%d-%H%M%S");
-    let session = format!("{}-{}-{}-{ts}", ctx.repo, ctx.flavor.label(), ctx.number);
+    // 防御的に `/` を `-` に正規化する。現在の呼び出し側はリポジトリ名のみを渡している
+    // (例: `rai`) が、将来 `OWNER/REPO` 形式が渡された場合に tmux session 名や log
+    // パスが破綻するのを避ける。tmux session 名は `:` も禁止だが現在の構成では出現
+    // しないので扱わない。
+    let repo_safe = ctx.repo.replace('/', "-");
+    let session = format!("{repo_safe}-{}-{}-{ts}", ctx.flavor.label(), ctx.number);
     let log_path = engine_log_path(&session)?;
     let wrapped_cmd = wrap_with_log(&full_cmd, &log_path, shell_kind);
 
-    let spawn = shell::user_shell_argv(&[
-        "tmux",
-        "new-session",
-        "-d",
-        "-s",
-        &session,
-        "-c",
-        &wt.path.display().to_string(),
-        &wrapped_cmd,
-    ])
-    .status();
-    if let Err(e) = spawn {
-        if wt.created {
-            rollback_worktree(ctx.branch);
+    // tmux の `[shell-command]` 位置に渡す `wrapped_cmd` は、`begin; cmd | other; end
+    // 2>&1 | tee …` のようにシェルメタ文字を含む **シェルスクリプト文字列**。
+    // - これをクォートせずに `$SHELL -c "<line>"` に渡すと外側シェルが `;` や `|` を
+    //   先に解釈してしまい、tmux に届くのは先頭の `begin` だけになる (シェル二重
+    //   解釈バグ)。
+    // - 単独引数として `user_shell_argv` 経由で渡しても、外側シェル → tmux → tmux の
+    //   default-shell とコンテキストが切り替わる際に「結果的には動くが直感に反する」
+    //   形になる。
+    // したがってここでは **wrapped_cmd を 1 トークンとしてユーザーシェルでクォート**
+    // した上で、ユーザーシェルに 1 つのコマンドラインとして渡す。tmux が
+    // shell-command を default-shell -c に内部で渡してくれるため、メタ文字は最後の
+    // 1 段でだけ解釈される。
+    let q = shell::quote_for(shell_kind);
+    let tmux_cmdline = format!(
+        "tmux new-session -d -s {} -c {} {}",
+        q(&session),
+        q(&wt.path.display().to_string()),
+        q(&wrapped_cmd),
+    );
+    let spawn = match shell::user_shell_command(&tmux_cmdline).status() {
+        Ok(s) => s,
+        Err(e) => {
+            if wt.created {
+                rollback_worktree(ctx.branch);
+            }
+            return Err(anyhow::Error::new(e).context("failed to spawn tmux"));
         }
-        return Err(anyhow::Error::new(e).context("failed to spawn tmux"));
-    }
-    let spawn = spawn.unwrap();
+    };
     if !spawn.success() {
         if wt.created {
             rollback_worktree(ctx.branch);
@@ -263,10 +320,23 @@ pub fn launch(ctx: &LaunchContext, wt: &Worktree) -> Result<()> {
 }
 
 pub fn rollback_worktree(branch: &str) {
+    // `cleanup_empty_worktree` と同じ流儀で、spawn 失敗 / 非ゼロ終了の両ケースを
+    // 個別にログする。tmux 起動が失敗したうえに worktree のロールバックも失敗した
+    // 場合、ユーザーは取り残された worktree を手動でクリーンアップする必要がある
+    // ので、何が起きたかを stderr に出しておく。
     eprintln!("tmux start failed; rolling back worktree");
-    shell::user_shell_argv(&["gwq", "remove", "--force", branch])
-        .status()
-        .ok();
+    match shell::user_shell_argv(&["gwq", "remove", "--force", branch]).status() {
+        Ok(s) if s.success() => {}
+        Ok(s) => eprintln!(
+            "rai: rollback `gwq remove --force {branch}` exited with {:?}; \
+             you may need to clean up the worktree manually.",
+            s.code()
+        ),
+        Err(e) => eprintln!(
+            "rai: rollback `gwq remove --force {branch}` failed to spawn: {e}; \
+             you may need to clean up the worktree manually."
+        ),
+    }
 }
 
 fn tmux_has_session(session: &str) -> bool {
@@ -313,12 +383,18 @@ where
     Ok(wt)
 }
 
-/// worktree 直下に `mise.toml` / `.mise.toml` があれば `mise install` を流す。
+/// worktree 直下に `mise.toml` / `.mise.toml` / `.tool-versions` があれば
+/// `mise install` を流す。`.tool-versions` は asdf 互換形式で mise も同じファイルを
+/// 解釈するため、これだけ存在するリポジトリも検出対象に含める。
 ///
 /// mise 未インストールや install 失敗で worktree 作成自体を巻き戻すのは過剰なので、
 /// 失敗は stderr に通知するだけでエラー伝播はしない。
-fn maybe_mise_install(path: &Path) {
-    let candidates = ["mise.toml", ".mise.toml"];
+///
+/// `pub(crate)` にしているのは resume パス (= 既存 worktree を再利用) でも
+/// 同じく実行する必要があるため (`docs/specs/18-develop.md` の「新規・既存いずれの
+/// worktree でも実行する」)。
+pub(crate) fn maybe_mise_install(path: &Path) {
+    let candidates = ["mise.toml", ".mise.toml", ".tool-versions"];
     if !candidates.iter().any(|name| path.join(name).exists()) {
         return;
     }
@@ -337,7 +413,9 @@ fn maybe_mise_install(path: &Path) {
 ///
 /// lockfile が見つからない `package.json` 単独の状態は skip する (どの pm を使う
 /// か rai 側で勝手に決めない)。失敗は mise と同じく stderr 通知のみ。
-fn maybe_node_install(path: &Path) {
+///
+/// `pub(crate)` にしているのは resume パスからも呼ぶため (`maybe_mise_install` と同じ理由)。
+pub(crate) fn maybe_node_install(path: &Path) {
     if !path.join("package.json").exists() {
         return;
     }
@@ -379,6 +457,15 @@ fn refresh_existing_worktree(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `cwd` で外部コマンド (`argv`) を `$SHELL -c` 経由で実行する内部ヘルパ。
+///
+/// `argv` の各要素は `shell::user_shell_argv` でシェルクォートされるので、
+/// 単純文字列はもちろん **スペースやメタ文字を含む値** も安全に渡せる。
+/// ただし `argv` の要素はそれぞれ「単一の argv」として扱われる前提で、
+/// `argv = &["git rebase --abort"]` のように 1 要素にスペース区切りで詰めると、
+/// その全体が単一トークンとしてクォートされて意図しない動作になる (= 「`git rebase
+/// --abort` という名前のコマンド」を探す)。必ず `&["git", "rebase", "--abort"]` の
+/// 形で渡すこと。
 fn run_in(cwd: &Path, argv: &[&str]) -> Result<()> {
     let st = shell::user_shell_argv(argv)
         .current_dir(cwd)
@@ -395,8 +482,19 @@ pub fn gwq_get(branch: &str) -> Result<PathBuf> {
     if !out.status.success() {
         bail!("gwq get {branch} not found");
     }
+    // `from_utf8_lossy` で U+FFFD 置換が起きるとパス比較が壊れるが、ここでバイト列を
+    // 受けても呼び出し側 (`PathBuf::from`) が `Path::new(str)` を期待しているので、
+    // lossy 変換は維持する。代わりに、得られたパスが実在するかを検証して、置換文字や
+    // ANSI エスケープ混入で発生した「偽のパス」を早期に弾く。
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    Ok(PathBuf::from(s))
+    let path = PathBuf::from(s);
+    if !path.exists() {
+        bail!(
+            "gwq get {branch} returned `{}`, but that path does not exist (gwq output may be malformed or stale)",
+            path.display()
+        );
+    }
+    Ok(path)
 }
 
 /// `develop resume` 用。既存 worktree のパスを取り出すだけで、`git reset` 等の
@@ -504,6 +602,42 @@ pub fn git_capture(args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
+/// 単純な文字列リストを fzf で 1 つ選ばせるヘルパ。`pick_with_fzf` は `(number,
+/// title)` 形式を前提にしているので、`#0\t<value>` のような番号合成を避けたい
+/// 場面 (= branch 名や任意ラベル) で使う。キャンセル時は `UserCancelled` を返す。
+pub fn pick_string_with_fzf(items: impl IntoIterator<Item = String>) -> Result<String> {
+    let items: Vec<String> = items.into_iter().collect();
+    if items.is_empty() {
+        bail!("nothing to pick");
+    }
+    let mut fzf = shell::user_shell_argv(&["fzf"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("failed to spawn `fzf`")?;
+    {
+        let mut stdin = fzf.stdin.take().ok_or_else(|| anyhow!("fzf stdin"))?;
+        for v in &items {
+            writeln!(stdin, "{v}").ok();
+        }
+    }
+    let out = fzf.wait_with_output()?;
+    if !out.status.success() {
+        return Err(anyhow::Error::new(UserCancelled));
+    }
+    let picked = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if picked.is_empty() {
+        return Err(anyhow::Error::new(UserCancelled));
+    }
+    Ok(picked)
+}
+
 pub fn pick_with_fzf(items: impl IntoIterator<Item = (u64, String)>) -> Result<Vec<(u64, String)>> {
     let items: Vec<_> = items.into_iter().collect();
     if items.is_empty() {
@@ -523,7 +657,10 @@ pub fn pick_with_fzf(items: impl IntoIterator<Item = (u64, String)>) -> Result<V
     }
     let out = fzf.wait_with_output()?;
     if !out.status.success() {
-        std::process::exit(130);
+        // fzf を Esc / Ctrl-C で抜けた = ユーザーキャンセル。
+        // process::exit(130) を直接呼ぶ代わりに UserCancelled を返し、トップレベル
+        // で exit code に変換する (Result の destructors を巻き戻すため)。
+        return Err(anyhow::Error::new(UserCancelled));
     }
     let s = String::from_utf8_lossy(&out.stdout);
     parse_selected(&s)
@@ -535,7 +672,9 @@ fn parse_selected(s: &str) -> Result<Vec<(u64, String)>> {
         selected.push(parse_one(line)?);
     }
     if selected.is_empty() {
-        std::process::exit(130);
+        // fzf が success かつ stdout 空 = Enter だけで抜けたケース。これも
+        // ユーザーキャンセル扱い。
+        return Err(anyhow::Error::new(UserCancelled));
     }
     Ok(selected)
 }
@@ -566,9 +705,15 @@ mod tests {
             Some("rai finalize"),
             Shell::Posix,
         );
-        assert!(cmd.starts_with("set -o pipefail; (agent --flag 'hello world')"));
-        assert!(cmd.contains("skip auto publish"));
-        assert!(cmd.ends_with("rai finalize"));
+        // テンプレート展開も含めて返り値が一意に決まるので、`contains` / `starts_with`
+        // ではなく `assert_eq!` で完全一致を取る (AGENTS.md Testing ガイドライン)。
+        assert_eq!(
+            cmd,
+            "set -o pipefail; (agent --flag 'hello world'); __rai_agent_status=$?; \
+             if [ \"$__rai_agent_status\" -ne 0 ]; then \
+             echo \"rai: agent exited with status $__rai_agent_status; skip auto publish\" >&2; \
+             exit \"$__rai_agent_status\"; fi; rai finalize"
+        );
     }
 
     #[test]
@@ -587,6 +732,24 @@ mod tests {
     }
 
     #[test]
+    fn agent_shell_command_appends_prompt_when_template_has_only_rai_placeholder() {
+        // `{RAI}` だけを含み `{PROMPT}` を持たないテンプレートでも、プロンプトを
+        // append する legacy fallback に倒れることを確認する。以前は has_placeholder
+        // が true になる結果 prompt 本文が消える回帰があった。
+        let cmd = build_agent_shell_command(
+            "{RAI} claude format",
+            "hello world",
+            "/opt/rai/rai",
+            None,
+            Shell::Posix,
+        );
+        assert_eq!(
+            cmd,
+            "set -o pipefail; (/opt/rai/rai claude format 'hello world')"
+        );
+    }
+
+    #[test]
     fn agent_shell_command_emits_fish_block_for_fish_shell() {
         let cmd = build_agent_shell_command(
             "ccs c1 -- {PROMPT} | {RAI} claude format",
@@ -595,10 +758,22 @@ mod tests {
             Some("rai finalize"),
             Shell::Fish,
         );
-        assert!(cmd.starts_with(
-            "begin; ccs c1 -- 'hello world' | '/opt/rai/rai' claude format; end; set -l __rai_pipe $pipestatus"
-        ));
-        assert!(cmd.ends_with("rai finalize"));
+        // fish 分岐も入出力が一意なので exact match。
+        // `$pipestatus` のキャプチャは `begin..end` の **内側** で行う必要がある
+        // (review #19): 外側で読むと block 全体の 1 要素リストに丸まり、ブロック内の
+        // パイプラインの各段の失敗が拾えない。`__rai_agent_status` はブロック内外で
+        // 共有するため `set -g` で global にしている。
+        assert_eq!(
+            cmd,
+            "set -g __rai_agent_status 0; \
+             begin; ccs c1 -- 'hello world' | '/opt/rai/rai' claude format; \
+             set -l __rai_pipe $pipestatus; \
+             for s in $__rai_pipe; if test $s -gt $__rai_agent_status; set -g __rai_agent_status $s; end; end; \
+             end; \
+             if test $__rai_agent_status -ne 0; \
+             echo \"rai: agent exited with status $__rai_agent_status; skip auto publish\" >&2; \
+             exit $__rai_agent_status; end; rai finalize"
+        );
     }
 
     #[test]
@@ -622,6 +797,38 @@ mod tests {
     }
 
     #[test]
+    fn build_engine_cmd_no_permission_mode_collapses_double_spaces_around_placeholder() {
+        // デフォルト DEFAULT_ENGINE_CMD と同じ形 (--verbose の直後にプレースホルダが
+        // あり、その後 -- が続く) で `permission_mode = None` のとき、二重スペースを
+        // 残さない。
+        assert_eq!(
+            build_engine_cmd(
+                "ccs c1 --print --output-format stream-json --verbose {PERMISSION_MODE} -- {PROMPT}",
+                None,
+            ),
+            "ccs c1 --print --output-format stream-json --verbose -- {PROMPT}"
+        );
+    }
+
+    #[test]
+    fn build_engine_cmd_no_permission_mode_trims_leading_space_when_placeholder_is_first() {
+        // `{PERMISSION_MODE}` が行頭にあるユーザーテンプレートで permission_mode = None
+        // のとき、先頭にスペースが残らないこと。
+        assert_eq!(
+            build_engine_cmd("{PERMISSION_MODE} ccs c1 -- {PROMPT}", None),
+            "ccs c1 -- {PROMPT}"
+        );
+    }
+
+    #[test]
+    fn collapse_spaces_squashes_runs_but_preserves_newlines() {
+        assert_eq!(collapse_spaces("a  b   c"), "a b c");
+        assert_eq!(collapse_spaces("a\n\nb"), "a\n\nb");
+        assert_eq!(collapse_spaces("  leading"), " leading");
+        assert_eq!(collapse_spaces("trailing  "), "trailing ");
+    }
+
+    #[test]
     fn wrap_with_log_uses_quoted_paths() {
         let p = wrap_with_log(
             "agent --x",
@@ -635,6 +842,35 @@ mod tests {
     }
 
     #[test]
+    fn fish_agent_block_wrapped_in_log_keeps_pipestatus_capture_inside_inner_begin() {
+        // `build_fish_agent_block` の出力を `wrap_with_log` に通したときに、
+        // 内側 begin..end (= 実エージェントを回すブロック) の中で `$pipestatus` が
+        // 取れることを保証する (review #19 の修正の回帰防止)。
+        // wrap_with_log は外側に `begin; <inner>; end 2>&1 | tee` を足すだけなので、
+        // ここでは「内側 begin の前に `set -g __rai_agent_status 0` が来て、内側 begin
+        // の **直後の `end` の手前** で pipestatus を読む」という構造を完全一致で確認する。
+        let inner = build_agent_shell_command(
+            "ccs c1 -- {PROMPT} | {RAI} claude format",
+            "hello world",
+            "/opt/rai/rai",
+            Some("rai finalize"),
+            Shell::Fish,
+        );
+        let wrapped = wrap_with_log(&inner, Path::new("/tmp/run.log"), Shell::Fish);
+        assert_eq!(
+            wrapped,
+            "begin; set -g __rai_agent_status 0; \
+             begin; ccs c1 -- 'hello world' | '/opt/rai/rai' claude format; \
+             set -l __rai_pipe $pipestatus; \
+             for s in $__rai_pipe; if test $s -gt $__rai_agent_status; set -g __rai_agent_status $s; end; end; \
+             end; \
+             if test $__rai_agent_status -ne 0; \
+             echo \"rai: agent exited with status $__rai_agent_status; skip auto publish\" >&2; \
+             exit $__rai_agent_status; end; rai finalize; end 2>&1 | tee -a '/tmp/run.log'"
+        );
+    }
+
+    #[test]
     fn flavor_label_matches_session_naming() {
         assert_eq!(Flavor::Issue.label(), "issue");
         assert_eq!(Flavor::Pr.label(), "pr");
@@ -643,9 +879,26 @@ mod tests {
     #[test]
     fn detect_node_package_manager_prefers_bun_then_pnpm_yarn_npm() {
         use std::fs;
-        let tmp = std::env::temp_dir().join(format!("rai-pm-detect-{}", std::process::id()));
+        // 並列テスト実行下でも一意になるよう PID + nanosecond + 関数名で命名する。
+        // 失敗時のクリーンアップは drop guard で行う。
+        let unique = format!(
+            "rai-pm-detect-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let tmp = std::env::temp_dir().join(unique);
+        struct CleanupGuard<'a>(&'a std::path::Path);
+        impl<'a> Drop for CleanupGuard<'a> {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(self.0);
+            }
+        }
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
+        let _guard = CleanupGuard(&tmp);
 
         // empty
         assert!(detect_node_package_manager(&tmp).is_none());

@@ -4,6 +4,7 @@
 
 pub mod common;
 pub mod finalize;
+pub mod gh_pr;
 pub mod issue;
 pub mod pr;
 pub mod resume;

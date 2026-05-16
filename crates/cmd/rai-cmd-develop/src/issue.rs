@@ -42,10 +42,22 @@ struct Issue {
 
 impl Run for Cmd {
     fn run(self, _ctx: &Ctx) -> Result<()> {
+        // `--branch` は単一 issue 専用。
+        // 1. CLI 引数で 2 件以上渡された場合 → ここで弾く (fzf を起動せずに済む)。
+        // 2. CLI 引数が空 (= fzf モード) で `--branch` 指定 → 「fzf で何件選ばれるか
+        //    実行するまで分からない上に、ユーザーに対話的に選ばせた後で弾くのは
+        //    UX 的に最悪」なので、fzf を起動する前に弾く。
+        // 3. fzf で 2 件以上選んでしまった場合 → `resolve_issues` 後の最終チェック
+        //    (= 念のための safety net)。
         if self.issue.len() > 1 && self.branch.is_some() {
             bail!("--branch can only be used with a single issue");
         }
-
+        if self.issue.is_empty() && self.branch.is_some() {
+            bail!(
+                "--branch cannot be combined with interactive (fzf) issue selection; \
+                 pass a single issue number or URL explicitly"
+            );
+        }
         let issues = resolve_issues(&self)?;
         if issues.len() > 1 && self.branch.is_some() {
             bail!("--branch can only be used with a single issue");
@@ -247,13 +259,19 @@ fn build_prompt(
             .replace("{ISSUE_URL}", url)
             .replace("{ISSUE_TITLE}", title));
     }
+    // 役割分担:
+    // - auto_publish=true (デフォルト): agent は commit & push まで、PR 作成は後段の
+    //   finalize agent に任せる。二重 `gh pr create` の試行を避ける + PR 本文の
+    //   テンプレを finalize 側に集約できる。
+    // - auto_publish=false (`--no-auto-publish`): finalize は起動しないので、agent
+    //   自身が PR 作成まで完結する。既存 PR の重複作成を避ける safety net も明示。
     if auto_publish {
         Ok(format!(
-            "GitHub Issue {url} (`{title}`) を一気通貫で開発し、PR を出すところまで自走してください。実装したらテスト・ビルド・lint をローカルで通し、commit して push し、`gh pr create` で PR を作成します。PR 本文には `Closes {url}` を含めてください。commit-msg hook がメッセージを弾いた場合はメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
+            "GitHub Issue {url} (`{title}`) を実装し、テスト・ビルド・lint をローカルで通したうえで、論理単位の commit を作って push するところまで自走してください。PR 作成 (= `gh pr create`) は **rai が後段で finalize agent を起動して担当する** ので、agent 側からは作成しないでください。commit-msg hook がメッセージを弾いた場合はメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
         ))
     } else {
         Ok(format!(
-            "GitHub Issue {url} (`{title}`) を一気通貫で開発し、commit、push、`gh pr create` で PR を作成するところまで自走してください。テスト・ビルド・lint をローカルで通すこと。commit-msg hook がメッセージを弾いたらメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
+            "GitHub Issue {url} (`{title}`) を一気通貫で開発し、commit、push、`gh pr create` で PR を作成するところまで自走してください (rai 側は `--no-auto-publish` 指定のため finalize agent を起動しません)。テスト・ビルド・lint をローカルで通すこと。PR 本文には `Closes {url}` を含めてください。既に同じブランチへの PR があれば新規作成せず、追加 push のみ行ってください。commit-msg hook がメッセージを弾いたらメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
         ))
     }
 }
@@ -329,7 +347,29 @@ mod tests {
     }
 
     #[test]
-    fn default_prompt_directs_agent_to_publish_without_handoff_language() {
+    fn slugify_japanese_title_falls_back_to_empty() {
+        // ASCII 英数字以外は全て区切りに変換されるため、純日本語タイトルは空に落ちる。
+        // `default_branch` 側でこの場合に `develop/issue-{number}-{ts}` に倒すフォールバック
+        // を用意しているので、空文字列が返ることが期待挙動。
+        assert_eq!(slugify("バグ修正"), "");
+        // 日本語混じり (ASCII 部分が拾われる) も検証する。
+        assert_eq!(slugify("バグ fix for foo-bar"), "fix-for-foo-bar");
+    }
+
+    #[test]
+    fn default_branch_for_japanese_title_uses_number_timestamp_only() {
+        let branch = default_branch("バグ修正", 42);
+        assert!(branch.starts_with("develop/issue-42-"), "branch = {branch}");
+        // slug 部分が無いので、`develop/issue-{number}-{ts}` 形 (ts は数値とハイフンのみ)。
+        let rest = branch.strip_prefix("develop/issue-42-").unwrap();
+        assert!(
+            rest.chars().all(|c| c.is_ascii_digit() || c == '-'),
+            "rest = {rest}"
+        );
+    }
+
+    #[test]
+    fn default_prompt_auto_publish_stops_at_push_and_defers_pr_to_finalize() {
         let prompt = build_prompt(
             None,
             "https://github.com/o/r/issues/13",
@@ -337,12 +377,13 @@ mod tests {
             true,
         )
         .unwrap();
-        assert!(prompt.contains("PR を出すところまで自走"));
-        assert!(prompt.contains("`gh pr create`"));
-        assert!(prompt.contains("Closes https://github.com/o/r/issues/13"));
-        assert!(prompt.contains("commit-msg hook"));
-        assert!(prompt.contains("--no-verify"));
-        assert!(!prompt.contains("finalize agent"));
+        // build_prompt の戻り値は引数から一意。AGENTS.md Testing ガイドラインに従い
+        // 完全一致で検証する。auto_publish=true では agent は commit&push まで、PR
+        // 作成は後段の finalize agent に任せる役割分担を明示する。
+        assert_eq!(
+            prompt,
+            "GitHub Issue https://github.com/o/r/issues/13 (`Auto publish`) を実装し、テスト・ビルド・lint をローカルで通したうえで、論理単位の commit を作って push するところまで自走してください。PR 作成 (= `gh pr create`) は **rai が後段で finalize agent を起動して担当する** ので、agent 側からは作成しないでください。commit-msg hook がメッセージを弾いた場合はメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
+        );
     }
 
     #[test]
@@ -354,7 +395,9 @@ mod tests {
             false,
         )
         .unwrap();
-        assert!(prompt.contains("`gh pr create`"));
-        assert!(!prompt.contains("finalize agent"));
+        assert_eq!(
+            prompt,
+            "GitHub Issue https://github.com/o/r/issues/13 (`Manual publish`) を一気通貫で開発し、commit、push、`gh pr create` で PR を作成するところまで自走してください (rai 側は `--no-auto-publish` 指定のため finalize agent を起動しません)。テスト・ビルド・lint をローカルで通すこと。PR 本文には `Closes https://github.com/o/r/issues/13` を含めてください。既に同じブランチへの PR があれば新規作成せず、追加 push のみ行ってください。commit-msg hook がメッセージを弾いたらメッセージを直して commit し直してください。`--no-verify` などで hook を回避するのは禁止です。"
+        );
     }
 }

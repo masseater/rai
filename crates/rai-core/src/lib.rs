@@ -1,6 +1,7 @@
 //! `rai-core` provides the shared foundation that every `rai` subcommand
 //! crate is expected to build on top of.
 
+pub mod claude;
 pub mod cli;
 pub mod logging;
 pub mod panic_hook;

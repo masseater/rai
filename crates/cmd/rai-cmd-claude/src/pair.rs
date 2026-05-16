@@ -6,12 +6,10 @@
 //! しないのはワークスペースの「Subcommand crate どうしを横断して depend しない」
 //! ポリシーに従うため (`AGENTS.md` の Important Instructions 参照)。
 
-use std::fs::File;
-use std::io::Read;
-
-use anyhow::{anyhow, Context as _};
+use anyhow::{anyhow, bail, Context as _};
 use clap::Args;
 use rai_core::{cli::Run, proc, shell, Ctx, Result};
+use uuid::Uuid;
 
 use crate::print::{OutputFormat, PermissionMode};
 
@@ -86,26 +84,36 @@ pub struct Cmd {
 
 impl Run for Cmd {
     fn run(self, _ctx: &Ctx) -> Result<()> {
-        let id_a = match self.id_a.clone() {
-            Some(v) => v,
-            None => random_uuid_v4().context("generate session id A")?,
-        };
-        let id_b = match self.id_b.clone() {
-            Some(v) => v,
-            None => random_uuid_v4().context("generate session id B")?,
-        };
+        // print 側と同じ pre-validation。pair の場合は session id 生成 / eprintln /
+        // rai pair の spawn など副作用が走った後に最初の `rai claude print` で死ぬのを
+        // 避けたい。print に揃えて早期エラーする。
+        if matches!(self.output_format, Some(OutputFormat::StreamJson)) && !self.claude_verbose {
+            bail!("--output-format stream-json requires --claude-verbose (claude rejects this combination)");
+        }
 
+        let id_a = self
+            .id_a
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let id_b = self
+            .id_b
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+
+        // current_exe() の失敗は通常起き得ない異常事態。テスト経路では `--rai-bin`
+        // で明示できるので、フォールバックの `"rai"` 推測は廃止し、わかりやすい
+        // エラーで停止する (spec 22 の意図)。
         let rai_bin = match self.rai_bin.clone() {
             Some(p) => p,
-            None => match std::env::current_exe() {
-                Ok(p) => p.display().to_string(),
-                Err(e) => {
-                    eprintln!(
-                        "rai claude pair: warning: current_exe() failed ({e}); falling back to PATH-resolved 'rai'"
-                    );
-                    "rai".to_string()
-                }
-            },
+            None => std::env::current_exe()
+                .map_err(|e| {
+                    anyhow!(
+                        "failed to resolve current rai executable (current_exe(): {e}). \
+                     pass --rai-bin <PATH> to override."
+                    )
+                })?
+                .display()
+                .to_string(),
         };
 
         let (_shell_path, shell_kind) = shell::detect_user_shell();
@@ -123,27 +131,32 @@ impl Run for Cmd {
 
         eprintln!("rai claude pair: session A={id_a} session B={id_b}");
 
+        // `cmd_a` / `cmd_b` は既にシェルコマンド文字列なので、これを `rai pair`
+        // の `--command-a` / `--command-b` 値として **1 引数のまま** 渡したい。
+        // `develop::common::launch` と同じパターン: argv を `user_shell_command`
+        // 用に手でクォートして 1 行のシェルコマンドに組み立てる。
         let max_cycles = self.max_cycles.to_string();
         let max_hours = self.max_hours.to_string();
-        let mut argv: Vec<&str> = vec![
-            rai_bin.as_str(),
-            "pair",
-            "--command-a",
-            cmd_a.as_str(),
-            "--command-b",
-            cmd_b.as_str(),
-            "--max-cycles",
-            max_cycles.as_str(),
-            "--max-hours",
-            max_hours.as_str(),
+        let mut parts: Vec<String> = vec![
+            q(&rai_bin),
+            "pair".to_string(),
+            "--command-a".to_string(),
+            q(&cmd_a),
+            "--command-b".to_string(),
+            q(&cmd_b),
+            "--max-cycles".to_string(),
+            max_cycles,
+            "--max-hours".to_string(),
+            max_hours,
         ];
         if self.no_status_bar {
-            argv.push("--no-status-bar");
+            parts.push("--no-status-bar".to_string());
         }
+        let full_cmd = parts.join(" ");
 
-        let status = shell::user_shell_argv(&argv)
+        let status = shell::user_shell_command(&full_cmd)
             .status()
-            .with_context(|| format!("failed to spawn `rai pair` ({argv:?})"))?;
+            .with_context(|| format!("failed to spawn `rai pair`: {full_cmd}"))?;
         let code = proc::shell_exit_code(&status);
         if code != 0 {
             std::process::exit(code);
@@ -194,24 +207,6 @@ fn build_print_invocation(
     parts.push("--".into());
     parts.push(q(&full_prompt));
     parts.join(" ")
-}
-
-/// `/dev/urandom` から 16 byte 読んで RFC 4122 v4 形式の UUID 文字列を作る。
-pub(crate) fn random_uuid_v4() -> Result<String> {
-    let mut bytes = [0u8; 16];
-    let mut f = File::open("/dev/urandom").map_err(|e| anyhow!("open /dev/urandom: {e}"))?;
-    f.read_exact(&mut bytes)
-        .map_err(|e| anyhow!("read /dev/urandom: {e}"))?;
-    bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
-    bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant RFC 4122
-    Ok(format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0], bytes[1], bytes[2], bytes[3],
-        bytes[4], bytes[5],
-        bytes[6], bytes[7],
-        bytes[8], bytes[9],
-        bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
-    ))
 }
 
 #[cfg(test)]
@@ -292,17 +287,5 @@ mod tests {
             got,
             "rai claude print --session-id abc -- '/goal echo $HOME && rm -rf /'"
         );
-    }
-
-    #[test]
-    fn random_uuid_v4_has_version_and_variant_bits() {
-        for _ in 0..32 {
-            let u = random_uuid_v4().expect("generate");
-            assert_eq!(u.len(), 36, "got {u}");
-            let bytes = u.as_bytes();
-            assert_eq!(bytes[14] as char, '4', "version bit: {u}");
-            let v = bytes[19] as char;
-            assert!(matches!(v, '8' | '9' | 'a' | 'b'), "variant bit: {u}");
-        }
     }
 }

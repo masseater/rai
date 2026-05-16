@@ -57,9 +57,24 @@
 - 子プロセス起動:
   - 必ずユーザーのログインシェル経由 (`rai-core::shell::user_shell_argv`) で実行
     する。`Command::new("claude")` の直叩きは禁止 (rai 全体ポリシー)。
+  - **CLI からの起動は常に tmux 経由 (= デフォルトで tmux モードのみ)**。
+    `rai claude print` を呼ぶたびに新規 detached tmux session
+    (`rai-claude-print-<short-uuid>-<unix-ns>`) を 1 つ立て、その中で claude を
+    回す。claude 終了後も `exec tail -f /dev/null` で pane を保持するので、
+    `tmux attach -t <name>` で後追い確認できる (= 「print 終わっても消えない」要件)。
+    `sleep infinity` を使わないのは macOS の BSD `sleep` が `infinity` を
+    受け付けず即時 exit してしまい、pane ごと死ぬため。
+  - tmux に渡す shell-command は default-shell の引用ルール (fish / zsh / bash で
+    異なる) を避けるため、**POSIX `/bin/sh` 用の一時スクリプトファイル** に書き出して
+    そのパスだけ渡す。tmux session 名は `<sentinel>.tmux` sidecar に書いて
+    おくので後追いツールから引ける。
+  - exit code は tmux 内のスクリプトが書く sentinel ファイル
+    (`<marker_dir>/<UUID>.<ts>.rc`) を `rai claude print` 本体がポーリングして取得し、
+    そのまま返す。tmux session は残置する (ユーザーが手動で kill する)。
 - 標準入出力:
   - stdin / stdout / stderr はそのままパススルー。`rai claude print` 自身は
-    出力に追記しない (ログを汚さない)。
+    出力に追記しない (ログを汚さない)。tmux 経由起動の場合、claude の出力は
+    tmux pane の中に出るので、対面確認は `tmux attach` 経由になる。
 - exit code:
   - claude の exit code をそのまま返す。signal 死は `128 + signo`。
 - エラー:
@@ -71,8 +86,11 @@
 
 ## 受け入れ条件
 
-- [ ] `rai claude print --session-id $(uuidgen) "echo hello"` が claude を起動し、
-      stdout に応答が流れる (実 claude が必要なので手動確認 OK)。
+- [ ] `rai claude print --session-id $(uuidgen) "echo hello"` が新規 tmux session を
+      立ち上げ、その中で claude を起動する (実 claude が必要なので手動確認 OK)。
+- [ ] claude が終了したあとも tmux session は残っており、`tmux attach -t <name>` で
+      pane を覗くと claude の出力 + `--- rai claude print: claude exited rc=... ---`
+      バナーが見える。
 - [ ] 同じ UUID で 2 回目を呼ぶと、claude 側で "Session ID ... is already in use"
       にならず、`--resume` で続きの会話として動く。
 - [ ] marker ディレクトリの内容が `<UUID>` というファイル 1 つだけ生成される。

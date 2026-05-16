@@ -21,53 +21,8 @@ pub struct Cmd {
     agent: AgentArgs,
 }
 
-#[derive(Debug, Deserialize)]
-struct PrJson {
-    number: u64,
-    title: String,
-    url: String,
-    #[serde(rename = "headRefName")]
-    head_ref_name: String,
-    #[serde(rename = "baseRefName")]
-    base_ref_name: String,
-    #[serde(rename = "mergeable")]
-    mergeable: Option<String>,
-    #[serde(rename = "statusCheckRollup", default)]
-    status_check_rollup: Vec<StatusCheck>,
-    #[serde(rename = "headRepository")]
-    head_repository: Option<HeadRepo>,
-    #[serde(rename = "headRepositoryOwner")]
-    head_repository_owner: Option<HeadOwner>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HeadRepo {
-    name: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct HeadOwner {
-    login: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct StatusCheck {
-    /// CheckRun → name, StatusContext → context. どちらかが入る。
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    context: Option<String>,
-    /// CheckRun: conclusion (SUCCESS / FAILURE / ...)
-    /// StatusContext: state (SUCCESS / FAILURE / ERROR / PENDING)
-    #[serde(default)]
-    conclusion: Option<String>,
-    #[serde(default)]
-    state: Option<String>,
-    #[serde(rename = "detailsUrl", default)]
-    details_url: Option<String>,
-    #[serde(rename = "targetUrl", default)]
-    target_url: Option<String>,
-}
+// `gh pr view` JSON 型は `crate::gh_pr` に集約 (`resume.rs` と共有)。
+use crate::gh_pr::{PrJson, StatusCheck};
 
 #[derive(Debug)]
 struct Pr {
@@ -144,36 +99,52 @@ fn run_one(cmd: &Cmd, pr: &Pr) -> Result<()> {
 }
 
 fn is_fork(pr: &Pr, base_owner: &str) -> bool {
-    match (&pr.head_owner, &pr.head_repo) {
-        (Some(owner), Some(_)) => owner != base_owner,
-        _ => false,
-    }
+    crate::gh_pr::is_fork(
+        pr.head_owner.as_deref(),
+        pr.head_repo.as_deref(),
+        base_owner,
+    )
 }
 
 fn ensure_local_branch_tracking_origin(branch: &str) -> Result<()> {
-    // 1. Fetch latest remote ref so origin/<branch> is up-to-date.
-    let st = shell::user_shell_argv(&["git", "fetch", "origin", branch])
+    // spec `docs/specs/18-develop.md` の指定どおり、refspec 付きで fetch する。
+    // 旧実装は `git fetch origin <branch>` → `git branch --track <branch> origin/<branch>`
+    // の 2 段だったが、`git fetch origin <branch>` は `FETCH_HEAD` を更新するだけで
+    // `refs/remotes/origin/<branch>` が更新される保証がない (`remote.origin.fetch` の
+    // refspec 設定や shallow clone 環境で 2 段目が失敗する)。refspec 形 (`<ref>:<ref>`)
+    // でローカル `refs/heads/<branch>` に直接取り込めば、remote-tracking ref に依存
+    // しないし、既存ローカルブランチは fast-forward / non-fast-forward 判定で扱える。
+    // - 既存ローカルブランチが既に最新 or 親子関係 → fast-forward で更新成功
+    // - 既存ローカルブランチが乖離 → fetch は non-fast-forward で失敗。`gwq add` +
+    //   `git pull --rebase` 側で reconcile されるので、ここでは失敗を無視する。
+    let refspec = format!("{branch}:{branch}");
+    let st = shell::user_shell_argv(&["git", "fetch", "origin", &refspec])
         .status()
-        .with_context(|| format!("failed to spawn `git fetch origin {branch}`"))?;
-    if !st.success() {
-        bail!("`git fetch origin {branch}` failed");
-    }
-
-    // 2. If local branch already exists, leave it alone — `gwq add` + `git pull --rebase`
-    //    on the worktree side will reconcile.
-    if local_branch_exists(branch)? {
+        .with_context(|| format!("failed to spawn `git fetch origin {refspec}`"))?;
+    if st.success() {
         return Ok(());
     }
-
-    // 3. Otherwise create a tracking branch from the remote ref.
-    let upstream = format!("origin/{branch}");
-    let st = shell::user_shell_argv(&["git", "branch", "--track", branch, &upstream])
-        .status()
-        .with_context(|| format!("failed to spawn `git branch --track {branch} {upstream}`"))?;
-    if !st.success() {
-        bail!("`git branch --track {branch} {upstream}` failed");
+    // refspec fetch が失敗するのは典型的には「既存ローカルブランチが remote と乖離して
+    // non-fast-forward になっている」ケース。後段の worktree 作成 (`ensure_worktree`)
+    // が `git pull --rebase` を回すので、upstream が設定されているならそこで reconcile
+    // が試みられる。upstream 未設定の場合は `git pull --rebase` が
+    // `fatal: no tracking information` で非ゼロ終了し、エラーがユーザーに伝搬される
+    // (= サイレントに整合性を失わない fail-safe な挙動)。
+    // ただし「fetch が失敗して既存ブランチで続行する」事実そのものは、ユーザーに
+    // 気付かれずに既存 commit を rebase 先に使ってしまうリスクがあるので、stderr に
+    // 警告だけは出す。
+    if local_branch_exists(branch)? {
+        eprintln!(
+            "rai: warning — `git fetch origin {refspec}` failed; \
+             continuing with the existing local branch `{branch}` \
+             (worktree setup will run `git pull --rebase` to reconcile)."
+        );
+        return Ok(());
     }
-    Ok(())
+    bail!(
+        "`git fetch origin {refspec}` failed and no local branch `{branch}` exists; \
+         either fetch manually or remove the diverged local branch."
+    )
 }
 
 fn local_branch_exists(branch: &str) -> Result<bool> {
@@ -404,13 +375,16 @@ fn build_finalize_command(
         q(&pr.head_ref),
         "--engine-cmd".to_string(),
         q(&cmd.agent.engine_cmd),
-        "--pr-base".to_string(),
-        q(&pr.base_ref),
+        // PR flavor の finalize は **既存 PR への push 専用** で、`gh pr create` を
+        // 試みないので `--pr-base` (= PR 作成時の base 指定) は不要。issue 側だけが
+        // 必要。`finalize::build_finalize_prompt` の `Flavor::Pr` 分岐も `pr_base` を
+        // 参照していない。`pr.base_ref` はここでは捨てて良い。
     ];
     if let Some(mode) = cmd.agent.permission_mode {
         parts.push("--permission-mode".to_string());
         parts.push(mode.as_arg().to_string());
     }
+    let _ = &pr.base_ref; // 受け取っているが finalize 側で未使用 (上記コメント参照)。
     Ok(parts.join(" "))
 }
 
@@ -438,10 +412,12 @@ mod tests {
     fn prompt_calls_out_conflict_when_pr_is_conflicting() {
         let pr = sample_pr("CONFLICTING", Vec::new());
         let prompt = build_prompt(None, &pr).unwrap();
-        assert!(prompt.contains("コンフリクトしています"));
-        assert!(prompt.contains("origin/main"));
-        assert!(prompt.contains("--no-verify"));
-        assert!(prompt.contains("新規 PR は作成しないでください"));
+        // build_prompt の出力は入力から一意に決まるので、AGENTS.md の Testing
+        // ガイドラインに従って完全一致で検証する。
+        assert_eq!(
+            prompt,
+            "PR https://github.com/o/r/pull/42 (`Fix stuff`) について、以下を実施してください:\n- このブランチは base `main` とコンフリクトしています。`git fetch origin main` のあと `git merge origin/main` (または `git rebase origin/main`) でコンフリクトを解消し、各ファイルの解消結果が PR の意図に沿っているかを確認してから commit してください。\n- 修正内容をテスト・ビルド・lint でローカル検証し、commit & `git push` で同じブランチに反映してください。\n- commit-msg hook がメッセージを弾いた場合は直して再 commit すること。`--no-verify` 等の hook 回避は禁止です。\n- 新規 PR は作成しないでください。既存 PR への追加 push が前提です。"
+        );
     }
 
     #[test]
@@ -462,17 +438,20 @@ mod tests {
             ],
         );
         let prompt = build_prompt(None, &pr).unwrap();
-        assert!(prompt.contains("CI ジョブが失敗"));
-        assert!(prompt.contains("`ci/test`"));
-        assert!(prompt.contains("https://example/jobs/1"));
-        assert!(prompt.contains("`ci/lint`"));
+        assert_eq!(
+            prompt,
+            "PR https://github.com/o/r/pull/42 (`Fix stuff`) について、以下を実施してください:\n- 以下の CI ジョブが失敗しています。失敗ログを `gh run view --log-failed` 等で取得し、根本原因を修正してください:\n  - `ci/test` (FAILURE): https://example/jobs/1\n  - `ci/lint` (FAILURE)\n- 修正内容をテスト・ビルド・lint でローカル検証し、commit & `git push` で同じブランチに反映してください。\n- commit-msg hook がメッセージを弾いた場合は直して再 commit すること。`--no-verify` 等の hook 回避は禁止です。\n- 新規 PR は作成しないでください。既存 PR への追加 push が前提です。"
+        );
     }
 
     #[test]
     fn prompt_falls_back_when_nothing_to_do() {
         let pr = sample_pr("MERGEABLE", Vec::new());
         let prompt = build_prompt(None, &pr).unwrap();
-        assert!(prompt.contains("コンフリクトも CI 失敗も検出されていません"));
+        assert_eq!(
+            prompt,
+            "PR https://github.com/o/r/pull/42 (`Fix stuff`) は現状コンフリクトも CI 失敗も検出されていません。レビューコメントなど他の指摘があれば対応し、必要なら追加 commit を push してください。"
+        );
     }
 
     #[test]

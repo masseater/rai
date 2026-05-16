@@ -80,6 +80,12 @@ fn run_one(cmd: &Cmd, target: &Target) -> Result<()> {
     })?;
     eprintln!("worktree: {}", wt.path.display());
 
+    // 既存 worktree でも mise / pm の install を流しておく
+    // (`docs/specs/18-develop.md` の「新規・既存いずれの worktree でも実行する」)。
+    // `ensure_worktree` 側 (issue / pr) の流儀と揃える。
+    common::maybe_mise_install(&wt.path);
+    common::maybe_node_install(&wt.path);
+
     let prompt = build_resume_prompt(target, !cmd.agent.no_auto_publish)?;
     let (_shell_path, shell_kind) = shell::detect_user_shell();
     let finalizer = if cmd.agent.no_auto_publish {
@@ -116,12 +122,24 @@ fn resolve_target(cmd: &Cmd, arg: &str) -> Result<Target> {
     }
     if let Ok(n) = arg.parse::<u64>() {
         let (owner, repo) = common::resolve_repo(cmd.repo.as_deref())?;
-        let flavor = cmd.flavor.unwrap_or(Flavor::Issue);
+        // 数値引数は Issue/PR どちらを指すか曖昧。以前は黙って Issue にフォール
+        // バックしていたが、PR を意図したユーザーが「ローカルブランチが見つかり
+        // ません」というずれたエラーを受け取って詰む。`--flavor` の明示を要求する。
+        let flavor = cmd.flavor.ok_or_else(|| anyhow!(
+            "TARGET `{arg}` is a bare number which is ambiguous (issue or PR). pass `--flavor issue` / `--flavor pr`, or use the full GitHub URL instead."
+        ))?;
         return build_target(cmd, &owner, &repo, n, flavor);
     }
     bail!("invalid TARGET: {arg} (expected number or GitHub issue/pull URL)")
 }
 
+// 注: `Target.base_ref` の `Option` は flavor で意味が変わる:
+// - `Flavor::Issue` → 常に `None`。PR base は CLI の `--pr-base` か
+//   `local_origin_head_branch()` で後段で解決する。
+// - `Flavor::Pr` → 常に `Some(pr.base_ref)`。PR が GitHub から取れる時点で base が
+//   確定しているので、Issue 側のフォールバック経路を踏まない。
+// 型レベルで表現していないので、`build_target` を将来変更する際はこの不変条件を維持
+// すること。
 fn build_target(cmd: &Cmd, owner: &str, repo: &str, number: u64, flavor: Flavor) -> Result<Target> {
     match flavor {
         Flavor::Issue => {
@@ -174,19 +192,10 @@ fn resolve_issue_branch(cmd: &Cmd, number: u64) -> Result<String> {
             "no local branch matching `develop/issue-{number}-*` found. Pass --branch to specify, or run `rai develop issue {number}` to start fresh."
         ),
         1 => Ok(candidates.into_iter().next().unwrap()),
-        _ => {
-            let picked = common::pick_with_fzf(
-                candidates
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, b)| (i as u64, b)),
-            )?;
-            picked
-                .into_iter()
-                .next()
-                .map(|(_, b)| b)
-                .ok_or_else(|| anyhow!("no branch picked"))
-        }
+        // 候補が複数あるときは fzf で 1 つ選ばせる。`pick_with_fzf` は `(number, title)`
+        // 用 API で `#<n>\t<value>` を画面に出してしまうので、ここでは branch 名だけを
+        // 1 行ずつ流す純粋な文字列セレクタ `pick_string_with_fzf` を使う。
+        _ => common::pick_string_with_fzf(candidates),
     }
 }
 
@@ -225,30 +234,8 @@ fn fetch_issue_title(owner: &str, repo: &str, number: u64) -> Result<String> {
     Ok(v.title)
 }
 
-#[derive(Debug, Deserialize)]
-struct PrJson {
-    number: u64,
-    title: String,
-    url: String,
-    #[serde(rename = "headRefName")]
-    head_ref_name: String,
-    #[serde(rename = "baseRefName")]
-    base_ref_name: String,
-    #[serde(rename = "headRepository")]
-    head_repository: Option<HeadRepo>,
-    #[serde(rename = "headRepositoryOwner")]
-    head_repository_owner: Option<HeadOwner>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HeadRepo {
-    name: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct HeadOwner {
-    login: String,
-}
+// JSON 形は `crate::gh_pr::PrJson` に集約 (pr.rs と共有)。ここでは PrLite に詰め替え。
+use crate::gh_pr::PrJson;
 
 #[derive(Debug)]
 struct PrLite {
@@ -263,10 +250,11 @@ struct PrLite {
 
 impl PrLite {
     fn is_fork(&self, base_owner: &str) -> bool {
-        match (&self.head_owner, &self.head_repo) {
-            (Some(owner), Some(_)) => owner != base_owner,
-            _ => false,
-        }
+        crate::gh_pr::is_fork(
+            self.head_owner.as_deref(),
+            self.head_repo.as_deref(),
+            base_owner,
+        )
     }
 }
 
@@ -301,14 +289,32 @@ fn build_resume_prompt(target: &Target, auto_publish: bool) -> Result<String> {
     })
 }
 
-fn issue_resume_prompt(url: &str, title: &str, branch: &str, _auto_publish: bool) -> String {
+fn issue_resume_prompt(url: &str, title: &str, branch: &str, auto_publish: bool) -> String {
+    // 役割分担 (issue.rs::build_prompt と揃える):
+    // - auto_publish=true (デフォルト): rai は agent 終了後に finalize agent を起動して
+    //   PR 作成までを担当するので、agent には commit & push までを依頼し、PR 作成は
+    //   **明示的に禁止** する。これで初回 resume 時の二重 `gh pr create` を避ける。
+    // - auto_publish=false (--no-auto-publish): finalize は起動されないので、agent が
+    //   単独で PR 作成まで完了させる必要がある。
+    let publish_clause = if auto_publish {
+        "残作業を仕上げ、テスト・ビルド・lint をローカルで通したうえで commit & push まで完了させてください。\
+PR 作成 (= `gh pr create`) は **rai が後段で finalize agent を起動して担当する** ので、agent 側からは作成しないでください。"
+    } else {
+        // Rust の行継続 `\<newline>` は次行の先頭空白も食うので、`(` は **行末側** に
+        // 置いて改行前にスペース + `(` をまとめておく。これで生成プロンプトは
+        // `完結させてください (`--no-auto-publish`…` と自然な間隔になる。
+        "残作業を仕上げて **agent 自身** で PR 作成まで完結させてください (\
+`--no-auto-publish` 指定のため rai 側は後段の finalize agent を起動しません)。\
+テスト・ビルド・lint をローカルで通し、commit & push、\
+`gh pr create` で PR を作成 (PR 本文に `Closes {url}`)。\
+既に同じブランチへの PR があれば新規作成せず、追加 push のみ行ってください。"
+    };
+    let publish_clause = publish_clause.replace("{url}", url);
     format!(
         "GitHub Issue {url} (`{title}`) の作業を **途中から** 再開してください。\
 worktree のブランチは `{branch}`。前回のセッションは rate limit / context limit / tmux 事故などで途中終了しています。\
 最初に必ず `git status` と `git log --oneline -20` で現在の進捗 (未コミット変更・既存 commit) を把握し、\
-未コミット変更があれば論理的な単位で commit を整えながら、残作業を仕上げて PR を出すところまで完了させてください。\
-テスト・ビルド・lint をローカルで通し、commit & push、`gh pr create` で PR を作成 (PR 本文に `Closes {url}`)。\
-既に同じブランチへの PR があれば新規作成せず、追加 push のみ行ってください。\
+未コミット変更があれば論理的な単位で commit を整えながら、{publish_clause}\
 commit-msg hook がメッセージを弾いた場合はメッセージを直して再 commit してください。`--no-verify` 等の hook 回避は禁止です。"
     )
 }
@@ -388,40 +394,41 @@ mod tests {
     }
 
     #[test]
-    fn issue_resume_prompt_directs_inspection_and_publish() {
+    fn issue_resume_prompt_auto_publish_true_defers_pr_creation_to_finalize_agent() {
         let p = issue_resume_prompt(
             "https://github.com/o/r/issues/9",
             "Resume me",
             "develop/issue-9-resume-me-20260504-101010",
             true,
         );
-        assert!(p.contains("途中から"));
-        assert!(p.contains("git status"));
-        assert!(p.contains("git log --oneline -20"));
-        assert!(p.contains("Closes https://github.com/o/r/issues/9"));
-        assert!(p.contains("--no-verify"));
-        assert!(!p.contains("finalize agent"));
+        // auto_publish=true では agent は commit & push まで。PR 作成は後段の
+        // finalize agent に任せる役割分担 (issue.rs::build_prompt と同じ)。
+        assert_eq!(
+            p,
+            "GitHub Issue https://github.com/o/r/issues/9 (`Resume me`) の作業を **途中から** 再開してください。worktree のブランチは `develop/issue-9-resume-me-20260504-101010`。前回のセッションは rate limit / context limit / tmux 事故などで途中終了しています。最初に必ず `git status` と `git log --oneline -20` で現在の進捗 (未コミット変更・既存 commit) を把握し、未コミット変更があれば論理的な単位で commit を整えながら、残作業を仕上げ、テスト・ビルド・lint をローカルで通したうえで commit & push まで完了させてください。PR 作成 (= `gh pr create`) は **rai が後段で finalize agent を起動して担当する** ので、agent 側からは作成しないでください。commit-msg hook がメッセージを弾いた場合はメッセージを直して再 commit してください。`--no-verify` 等の hook 回避は禁止です。"
+        );
     }
 
     #[test]
-    fn issue_resume_prompt_omits_handoff_language_when_disabled() {
+    fn issue_resume_prompt_auto_publish_false_tells_agent_to_finish_pr_itself() {
         let p = issue_resume_prompt(
             "https://github.com/o/r/issues/9",
             "Resume me",
             "develop/issue-9-resume-me-20260504-101010",
             false,
         );
-        assert!(!p.contains("finalize agent"));
+        assert_eq!(
+            p,
+            "GitHub Issue https://github.com/o/r/issues/9 (`Resume me`) の作業を **途中から** 再開してください。worktree のブランチは `develop/issue-9-resume-me-20260504-101010`。前回のセッションは rate limit / context limit / tmux 事故などで途中終了しています。最初に必ず `git status` と `git log --oneline -20` で現在の進捗 (未コミット変更・既存 commit) を把握し、未コミット変更があれば論理的な単位で commit を整えながら、残作業を仕上げて **agent 自身** で PR 作成まで完結させてください (`--no-auto-publish` 指定のため rai 側は後段の finalize agent を起動しません)。テスト・ビルド・lint をローカルで通し、commit & push、`gh pr create` で PR を作成 (PR 本文に `Closes https://github.com/o/r/issues/9`)。既に同じブランチへの PR があれば新規作成せず、追加 push のみ行ってください。commit-msg hook がメッセージを弾いた場合はメッセージを直して再 commit してください。`--no-verify` 等の hook 回避は禁止です。"
+        );
     }
 
     #[test]
     fn pr_resume_prompt_forbids_new_pr() {
         let p = pr_resume_prompt("https://github.com/o/r/pull/42", "Fix CI", "feature/x", 42);
-        assert!(p.contains("途中から"));
-        assert!(p.contains("git status"));
-        assert!(p.contains("gh pr view 42"));
-        assert!(p.contains("git push origin HEAD:feature/x"));
-        assert!(p.contains("新規 PR は作成しないでください"));
-        assert!(p.contains("--no-verify"));
+        assert_eq!(
+            p,
+            "GitHub PR https://github.com/o/r/pull/42 (`Fix CI`) の作業を **途中から** 再開してください。worktree のブランチは `feature/x`。前回のセッションは rate limit / context limit / tmux 事故などで途中終了しています。最初に `git status`, `git log --oneline -20` で worktree の進捗を確認し、`gh pr view 42` / `gh pr checks 42` で PR の最新状態 (mergeable, CI) も確認してください。コンフリクト解消や CI 失敗修正など残作業を仕上げ、commit & `git push origin HEAD:feature/x` で同じ PR ブランチに反映してください。**新規 PR は作成しないでください**。既存 PR への追加 push が前提です。commit-msg hook がメッセージを弾いた場合はメッセージを直して再 commit してください。`--no-verify` 等の hook 回避は禁止です。"
+        );
     }
 }

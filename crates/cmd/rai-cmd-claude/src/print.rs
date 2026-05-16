@@ -6,40 +6,15 @@
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context as _};
 use clap::{Args, ValueEnum};
 use rai_core::{cli::Run, proc, shell, Ctx, Result};
 
-/// claude の `--permission-mode` に渡す値。`rai develop` と同じ 6 種。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum PermissionMode {
-    #[value(name = "acceptEdits")]
-    AcceptEdits,
-    #[value(name = "auto")]
-    Auto,
-    #[value(name = "bypassPermissions")]
-    BypassPermissions,
-    #[value(name = "default")]
-    Default,
-    #[value(name = "dontAsk")]
-    DontAsk,
-    #[value(name = "plan")]
-    Plan,
-}
-
-impl PermissionMode {
-    pub fn as_arg(self) -> &'static str {
-        match self {
-            Self::AcceptEdits => "acceptEdits",
-            Self::Auto => "auto",
-            Self::BypassPermissions => "bypassPermissions",
-            Self::Default => "default",
-            Self::DontAsk => "dontAsk",
-            Self::Plan => "plan",
-        }
-    }
-}
+// `--permission-mode` の共通型は rai-core に置いてある (旧実装で
+// rai-cmd-develop と enum 定義が重複していたのを統合)。
+pub use rai_core::claude::PermissionMode;
 
 /// `--output-format` に渡す値。claude の値 (text / json / stream-json) と一致。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -113,12 +88,29 @@ impl Run for Cmd {
             self.claude_verbose,
             self.fork_session,
             &self.prompt,
+            // ユーザーフェイシングな起動は **常に tmux 経由**。終了後も pane が残るので
+            // 後追いで `tmux attach -t <name>` して確認できる。Direct 起動はテスト用の
+            // 内部分岐のみで使う (CLI からは到達できない)。
+            Launch::Tmux,
         )?;
         if code != 0 {
             std::process::exit(code);
         }
         Ok(())
     }
+}
+
+/// `execute` が claude をどう起動するかを指定する内部 enum。
+/// CLI からは常に `Tmux`。`Direct` はユニットテストの統合シナリオ専用なので、
+/// 非 test ビルドで dead_code 扱いされないよう明示的に allow している。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Launch {
+    /// `claude` を子プロセスとして直接実行する (テスト用)。
+    #[cfg_attr(not(test), allow(dead_code))]
+    Direct,
+    /// `tmux new-session -d` で新しい detached セッションを 1 つ立て、その中で
+    /// claude を実行する。claude 終了後も `sleep infinity` で pane を保持する。
+    Tmux,
 }
 
 fn validate(
@@ -153,6 +145,7 @@ pub(crate) fn execute(
     claude_verbose: bool,
     fork_session: bool,
     prompt: &str,
+    launch: Launch,
 ) -> Result<i32> {
     let marker = marker_dir.join(session_id);
     let mode = if marker.exists() {
@@ -186,12 +179,190 @@ pub(crate) fn execute(
         fork_session,
         prompt,
     );
-    let argv_ref: Vec<&str> = argv.iter().map(String::as_str).collect();
 
-    let status = shell::user_shell_argv(&argv_ref)
+    match launch {
+        Launch::Direct => {
+            let argv_ref: Vec<&str> = argv.iter().map(String::as_str).collect();
+            let status = shell::user_shell_argv(&argv_ref)
+                .status()
+                .with_context(|| format!("failed to spawn claude: {argv:?}"))?;
+            Ok(proc::shell_exit_code(&status))
+        }
+        Launch::Tmux => execute_in_tmux(&argv, marker_dir, session_id),
+    }
+}
+
+/// `argv` を tmux 内で実行し、claude の exit code を sentinel ファイル経由で受け取る。
+///
+/// 設計:
+/// - `tmux new-session -d -s <name>` で detached セッションを 1 つ作り、その中で
+///   POSIX shell スクリプトを 1 つ実行する。スクリプトは:
+///   1. claude を実行
+///   2. exit code を sentinel に書く
+///   3. `exec tail -f /dev/null` で pane を保持
+/// - claude が終了しても pane は `tail -f` で生き続けるので、ユーザーは後から
+///   `tmux attach -t <name>` で出力を確認できる。
+/// - `rai claude print` 本体は sentinel ファイルが現れるまでポーリングし、出てきた
+///   exit code をそのまま返す。tmux セッションはそのまま残しておく (= 「print 終わっても
+///   消えない」要件)。
+/// - `sleep infinity` を使わないのは macOS の BSD `sleep` が `infinity` を受け
+///   付けず即時 exit するため。pane が死ぬと session ごと消えてしまう。
+///   `tail -f /dev/null` は GNU 拡張に依らず、シグナル待ちで CPU も使わない。
+fn execute_in_tmux(argv: &[String], marker_dir: &Path, session_id: &str) -> Result<i32> {
+    // tmux の `[shell-command]` は **単一文字列** で、`default-shell` (= 通常 fish や zsh)
+    // に渡される。default-shell の引用ルールはユーザー環境次第なので、引用地獄を避ける
+    // ため POSIX `/bin/sh` 用の小さなスクリプトを sidecar として書き出し、tmux には
+    // そのパスだけ渡す。スクリプト内では POSIX で claude を呼び、exit code を sentinel
+    // に書いてから `exec sleep infinity` で pane を保持する。
+
+    let ts_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    fs::create_dir_all(marker_dir)
+        .with_context(|| format!("failed to create marker dir {}", marker_dir.display()))?;
+    let sentinel = marker_dir.join(format!("{session_id}.{ts_ns}.rc"));
+    let _ = fs::remove_file(&sentinel);
+    let sentinel_str = sentinel
+        .to_str()
+        .context("sentinel path is not valid UTF-8")?;
+
+    let claude_cmdline = argv
+        .iter()
+        .map(|s| shell::quote_posix(s))
+        .collect::<Vec<_>>()
+        .join(" ");
+    // `exec tail -f /dev/null` で pane を保持する。macOS の BSD `sleep` は
+    // `infinity` を受け付けず即時 exit してしまうため (= pane が死んで session
+    // ごと消える)、GNU 拡張に依らない `tail -f /dev/null` を使う。
+    //
+    // sentinel ファイルは `> file` の素朴なリダイレクトだと、ポーリング側が
+    // `O_TRUNC` 完了直後・write 前のタイミングで読むと空文字を見てしまう競合が
+    // ある。`<sentinel>.tmp` に書いてから `mv` で atomic に rename する。
+    let sentinel_tmp_q = shell::quote_posix(&format!("{sentinel_str}.tmp"));
+    let script_body = format!(
+        "#!/bin/sh\nset +e\n{claude_cmdline}\n__rai_rc=$?\nprintf '%d' \"$__rai_rc\" > {sentinel_tmp_q}\nmv -f {sentinel_tmp_q} {sentinel_q}\nprintf '\\n--- rai claude print: claude exited rc=%d. tmux session preserved. ---\\n' \"$__rai_rc\"\nexec tail -f /dev/null\n",
+        sentinel_q = shell::quote_posix(sentinel_str),
+    );
+    let script_path = marker_dir.join(format!("{session_id}.{ts_ns}.sh"));
+    fs::write(&script_path, script_body.as_bytes())
+        .with_context(|| format!("failed to write tmux script {}", script_path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("failed to chmod {}", script_path.display()))?;
+    }
+
+    // tmux session 名は session_id の先頭 8 文字 + タイムスタンプで衝突回避。
+    // `.` と `:` は禁止文字なので、英数字とハイフンのみにする。
+    let short_id = session_id
+        .split('-')
+        .next()
+        .unwrap_or(session_id)
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(8)
+        .collect::<String>();
+    let tmux_session = format!("rai-claude-print-{short_id}-{ts_ns}");
+
+    let script_path_str = script_path
+        .to_str()
+        .context("script path is not valid UTF-8")?;
+    // tmux の `[shell-command]` 位置に渡す引数は、tmux が内部で `default-shell -c`
+    // に投げ込む 1 段の解釈を受ける。`user_shell_argv` で個別クォートしただけだと、
+    // 外側シェルは正しく扱うが tmux 内部の `default-shell -c` 段でパスのスペース
+    // 等が再度分割されてしまう。`develop::common::launch` と同じ流儀で、scriptパスを
+    // **シェル種別に応じて 1 度クォートしてから** 1 行のシェルコマンドを組み立て、
+    // `user_shell_command` で渡す。
+    let (_user_shell, shell_kind) = shell::detect_user_shell();
+    let q = shell::quote_for(shell_kind);
+    let tmux_cmdline = format!(
+        "tmux new-session -d -s {} {}",
+        q(&tmux_session),
+        q(script_path_str),
+    );
+
+    let status = shell::user_shell_command(&tmux_cmdline)
         .status()
-        .with_context(|| format!("failed to spawn claude: {argv:?}"))?;
-    Ok(proc::shell_exit_code(&status))
+        .with_context(|| format!("failed to spawn tmux: {tmux_cmdline}"))?;
+    if !status.success() {
+        let code = proc::shell_exit_code(&status);
+        bail!(
+            "tmux new-session failed with exit code {code} \
+             (is tmux installed? session name attempted: {tmux_session})"
+        );
+    }
+
+    // tmux 経由で起動したセッション名を、テスト / 後追い用の sidecar ファイルに書き残す。
+    // 出力には `<sentinel>` を共有するパス命名規則を使う (`<sentinel>.tmux`)。
+    let session_file = sentinel.with_extension("tmux");
+    fs::write(&session_file, tmux_session.as_bytes()).with_context(|| {
+        format!(
+            "failed to write tmux session sidecar file {}",
+            session_file.display()
+        )
+    })?;
+
+    eprintln!(
+        "rai claude print: tmux session '{tmux_session}' is running. \
+         attach: `tmux attach -t {tmux_session}` (it stays alive after claude exits)"
+    );
+
+    // sentinel をポーリング。claude の完了を待つだけで、tmux session は触らない。
+    // NotFound の場合は tmux session の生存も同時にチェックし、session が消えていれば
+    // (= OOM / SIGKILL / 手動 kill 等で claude が完了前に死んだ) bail する。これが
+    // 無いと sentinel が永遠に出ない場合に `rai claude print` が無限ハングする。
+    loop {
+        match fs::read_to_string(&sentinel) {
+            Ok(s) => {
+                let trimmed = s.trim();
+                if !trimmed.is_empty() {
+                    let code: i32 = trimmed.parse().unwrap_or(1);
+                    return Ok(code);
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if !tmux_has_session(&tmux_session)? {
+                    bail!(
+                        "tmux session '{tmux_session}' disappeared before claude wrote \
+                         its exit code to {sentinel_path}. claude was likely killed \
+                         (SIGKILL / OOM / manual kill) before completing. \
+                         Inspect `tmux ls` and remove the marker {marker} if you want \
+                         to retry with a fresh --session-id.",
+                        sentinel_path = sentinel.display(),
+                        marker = marker_dir.join(session_id).display(),
+                    );
+                }
+            }
+            Err(e) => {
+                // NotFound 以外 (permission denied 等) は復旧見込みなく落ちるが、
+                // tmux session を残置しない方が clean。kill を試みてから err を返す。
+                // kill 自体の失敗は無視する (session が既に消えている可能性もある)。
+                let _ = shell::user_shell_argv(&["tmux", "kill-session", "-t", &tmux_session])
+                    .stderr(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .status();
+                return Err(e).with_context(|| {
+                    format!(
+                        "read sentinel {} (tmux session '{tmux_session}' was killed as cleanup)",
+                        sentinel.display()
+                    )
+                });
+            }
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// `tmux has-session -t <name>` でセッションの生存を確認する。tmux 経由なので
+/// ユーザーシェル (`user_shell_argv`) 越しに呼ぶ (rai 全体の shell ポリシーに準拠)。
+fn tmux_has_session(name: &str) -> Result<bool> {
+    let status = shell::user_shell_argv(&["tmux", "has-session", "-t", name])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .with_context(|| format!("failed to spawn `tmux has-session -t {name}`"))?;
+    Ok(status.success())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -321,19 +492,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn argv_permission_modes_serialize() {
-        for (m, want) in [
-            (PermissionMode::AcceptEdits, "acceptEdits"),
-            (PermissionMode::Auto, "auto"),
-            (PermissionMode::BypassPermissions, "bypassPermissions"),
-            (PermissionMode::Default, "default"),
-            (PermissionMode::DontAsk, "dontAsk"),
-            (PermissionMode::Plan, "plan"),
-        ] {
-            assert_eq!(m.as_arg(), want);
-        }
-    }
+    // PermissionMode の as_arg() は rai-core 側でテスト済み
+    // (`rai_core::claude::tests::as_arg_serializes_all_variants`)。
+    // ここでは重複しない。
 
     #[test]
     fn argv_output_formats_serialize() {
@@ -382,10 +543,9 @@ mod tests {
     #[test]
     fn validate_rejects_stream_json_without_claude_verbose() {
         let err = validate("uuid", "p", Some(OutputFormat::StreamJson), false).unwrap_err();
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("--claude-verbose"),
-            "unexpected message: {msg}"
+        assert_eq!(
+            err.to_string(),
+            "--output-format stream-json requires --claude-verbose (claude rejects this combination)"
         );
     }
 
@@ -426,11 +586,14 @@ mod tests {
 
         let log = tmp.join("argv.log");
         let stub = tmp.join("stub-claude.sh");
+        // stub は引数を **NUL 区切り** で 1 invocation = 1 行に書き出す。
+        // 末尾に余分な `\0` を 1 つ足すことで、行末の改行と区別できる。これにより
+        // プロンプトにスペースが含まれていてもパース時にトークン分割せずに済む。
         fs::write(
             &stub,
             format!(
-                "#!/bin/sh\necho \"$@\" >> {}\nexit 0\n",
-                shell::quote_posix(log.to_str().unwrap())
+                "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done >> {log}\nprintf '\\0\\n' >> {log}\nexit 0\n",
+                log = shell::quote_posix(log.to_str().unwrap()),
             ),
         )
         .unwrap();
@@ -448,6 +611,7 @@ mod tests {
             false,
             false,
             "first",
+            Launch::Direct,
         )
         .unwrap();
         assert_eq!(code, 0);
@@ -455,10 +619,16 @@ mod tests {
             markers.join(uuid).exists(),
             "marker should exist after 1st call"
         );
-        let log1 = fs::read_to_string(&log).unwrap();
-        assert!(
-            log1.contains(&format!("--session-id {uuid}")),
-            "first call should use --session-id: {log1:?}"
+        let log_after_first: Vec<Vec<String>> = parse_stub_log(&log);
+        assert_eq!(
+            log_after_first,
+            vec![vec![
+                "--print".to_string(),
+                "--session-id".to_string(),
+                uuid.to_string(),
+                "--".to_string(),
+                "first".to_string(),
+            ]]
         );
 
         let code = execute(
@@ -470,18 +640,29 @@ mod tests {
             false,
             false,
             "second",
+            Launch::Direct,
         )
         .unwrap();
         assert_eq!(code, 0);
-        let log2 = fs::read_to_string(&log).unwrap();
-        let second_line = log2.lines().nth(1).expect("two log lines");
-        assert!(
-            second_line.contains(&format!("--resume {uuid}")),
-            "second call should use --resume: {second_line:?}"
-        );
-        assert!(
-            !second_line.contains("--session-id"),
-            "second call must not include --session-id: {second_line:?}"
+        let log_after_second: Vec<Vec<String>> = parse_stub_log(&log);
+        assert_eq!(
+            log_after_second,
+            vec![
+                vec![
+                    "--print".to_string(),
+                    "--session-id".to_string(),
+                    uuid.to_string(),
+                    "--".to_string(),
+                    "first".to_string(),
+                ],
+                vec![
+                    "--print".to_string(),
+                    "--resume".to_string(),
+                    uuid.to_string(),
+                    "--".to_string(),
+                    "second".to_string(),
+                ],
+            ]
         );
     }
 
@@ -506,12 +687,12 @@ mod tests {
 
         let log = tmp.join("argv.log");
         let stub = tmp.join("stub-claude.sh");
-        // exit 1 で死ぬが、argv は記録する。
+        // exit 1 で死ぬが、argv は NUL 区切りで記録する。
         fs::write(
             &stub,
             format!(
-                "#!/bin/sh\necho \"$@\" >> {}\nexit 1\n",
-                shell::quote_posix(log.to_str().unwrap())
+                "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done >> {log}\nprintf '\\0\\n' >> {log}\nexit 1\n",
+                log = shell::quote_posix(log.to_str().unwrap()),
             ),
         )
         .unwrap();
@@ -529,6 +710,7 @@ mod tests {
             false,
             false,
             "first",
+            Launch::Direct,
         )
         .unwrap();
         assert_eq!(code, 1, "stub should exit 1");
@@ -546,17 +728,48 @@ mod tests {
             false,
             false,
             "second",
+            Launch::Direct,
         )
         .unwrap();
         assert_eq!(code, 1);
-        let log2 = fs::read_to_string(&log).unwrap();
-        let lines: Vec<&str> = log2.lines().collect();
-        assert_eq!(lines.len(), 2);
-        assert!(
-            lines[1].contains(&format!("--resume {uuid}")),
-            "second call after failure must still use --resume: {:?}",
-            lines[1]
+        let parsed = parse_stub_log(&log);
+        assert_eq!(
+            parsed,
+            vec![
+                vec![
+                    "--print".to_string(),
+                    "--session-id".to_string(),
+                    uuid.to_string(),
+                    "--".to_string(),
+                    "first".to_string(),
+                ],
+                vec![
+                    "--print".to_string(),
+                    "--resume".to_string(),
+                    uuid.to_string(),
+                    "--".to_string(),
+                    "second".to_string(),
+                ],
+            ]
         );
+    }
+
+    /// stub claude が **NUL 区切り** で書き出した argv をパースする。
+    /// 1 invocation = 1 行 (改行で区切られる)、各 invocation の argv は `\0` で区切られ、
+    /// 末尾に空の `\0` 1 つを置いて行末との区別を作っている。
+    /// プロンプトにスペースが含まれていてもトークン分割せずに済む。
+    fn parse_stub_log(path: &Path) -> Vec<Vec<String>> {
+        let raw = fs::read(path).unwrap();
+        // 各 invocation は `arg1\0arg2\0...\0argN\0\0\n` の形で 1 行 (改行で終わる)。
+        raw.split(|b| *b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                line.split(|b| *b == b'\0')
+                    .filter(|tok| !tok.is_empty())
+                    .map(|tok| String::from_utf8(tok.to_vec()).expect("utf-8 argv"))
+                    .collect()
+            })
+            .collect()
     }
 
     /// 簡易な tempdir cleanup ガード (`tempfile` クレートを workspace に足さずに済ます)。
@@ -568,5 +781,175 @@ mod tests {
             }
         }
         G(path)
+    }
+
+    /// `tmux -V` で tmux が PATH 上にあるかを確認するヘルパ。本番コードと揃えて
+    /// ユーザーシェル経由で起動する (`Command::new("tmux")` 直叩きは shell policy 違反)。
+    fn tmux_available() -> bool {
+        shell::user_shell_argv(&["tmux", "-V"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// テスト終了時に対象 tmux session を kill するガード。テスト失敗時の取り残しを防ぐ。
+    fn tmux_session_guard(name: String) -> impl Drop {
+        struct G(String);
+        impl Drop for G {
+            fn drop(&mut self) {
+                let _ = shell::user_shell_argv(&["tmux", "kill-session", "-t", &self.0]).output();
+            }
+        }
+        G(name)
+    }
+
+    /// 統合テスト: `Launch::Tmux` で claude が tmux 内で実行され、claude 終了後も
+    /// pane (= tmux session) が残り続け、`rai claude print` 本体は claude の exit
+    /// code を sentinel 経由で受け取って正しく返すことを確認する。
+    /// tmux が CI runner で利用できない場合はスキップ。
+    #[cfg(unix)]
+    #[test]
+    fn execute_tmux_mode_returns_claude_rc_and_keeps_session_alive() {
+        if !tmux_available() {
+            eprintln!("tmux not installed; skipping execute_tmux_mode test");
+            return;
+        }
+
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "rai-claude-print-tmux-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        fs::create_dir_all(&tmp).unwrap();
+        let _guard = scopeguard(&tmp);
+
+        let log = tmp.join("argv.log");
+        let stub = tmp.join("stub-claude.sh");
+        // 0 で終了し、tmux 側の hold loop でセッションが残るパスを検証する。
+        // argv は NUL 区切りで記録 (空白を含むプロンプトでも正しくパースできる)。
+        fs::write(
+            &stub,
+            format!(
+                "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done >> {log}\nprintf '\\0\\n' >> {log}\nexit 0\n",
+                log = shell::quote_posix(log.to_str().unwrap()),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let markers = tmp.join("markers");
+        let uuid = "ffffffff-ffff-4fff-bfff-ffffffffff01";
+
+        let code = execute(
+            stub.to_str().unwrap(),
+            uuid,
+            &markers,
+            None,
+            None,
+            false,
+            false,
+            "tmux-first",
+            Launch::Tmux,
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+
+        // stub が argv を log に書いたことを確認 (= tmux 内で実際に起動された)。
+        let parsed = parse_stub_log(&log);
+        assert_eq!(
+            parsed,
+            vec![vec![
+                "--print".to_string(),
+                "--session-id".to_string(),
+                uuid.to_string(),
+                "--".to_string(),
+                "tmux-first".to_string(),
+            ]]
+        );
+
+        // execute_in_tmux が書き残した sidecar から、起動した tmux session 名を取る。
+        // テスト終了時に確実に kill するため tmux_session_guard で保護する。
+        let sidecar = fs::read_dir(&markers)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| p.extension().and_then(|s| s.to_str()) == Some("tmux"))
+            .expect("execute_in_tmux must write a <sentinel>.tmux sidecar");
+        let tmux_session = fs::read_to_string(&sidecar).unwrap().trim().to_string();
+        let _session_kill_guard = tmux_session_guard(tmux_session.clone());
+
+        // tmux ls にその session 名が含まれている = print 終了後も session が残っている。
+        // ユーザーシェル経由 (rai 全体の shell policy に準拠)。
+        let ls_out = shell::user_shell_argv(&["tmux", "ls", "-F", "#S"])
+            .output()
+            .expect("tmux ls");
+        let ls_stdout = String::from_utf8_lossy(&ls_out.stdout);
+        let ls_stderr = String::from_utf8_lossy(&ls_out.stderr);
+        assert!(
+            ls_stdout.lines().any(|l| l == tmux_session),
+            "tmux ls must list the print session '{tmux_session}' (stdout={ls_stdout:?} stderr={ls_stderr:?})"
+        );
+
+        // 「print 終わっても消えない」を確認する: claude (stub) 終了から 1 秒経過後も
+        // session がまだ alive であること。これで `exec tail -f /dev/null` の hold が
+        // 効いていることが分かる。pane_current_command は default-shell (fish) が
+        // 子プロセスを wait() しているため "fish" のままになるので、コマンド名では
+        // なく **session の生存** だけを最終確認にする。
+        std::thread::sleep(Duration::from_secs(1));
+        let ls_after = shell::user_shell_argv(&["tmux", "ls", "-F", "#S"])
+            .output()
+            .expect("tmux ls (after wait)");
+        let ls_after_stdout = String::from_utf8_lossy(&ls_after.stdout);
+        assert!(
+            ls_after_stdout.lines().any(|l| l == tmux_session),
+            "tmux session '{tmux_session}' must still exist 1s after claude exited \
+             (stdout={ls_after_stdout:?}). claude exit was sentinel-confirmed, so a missing \
+             session here means the hold-after-exit logic broke."
+        );
+    }
+
+    /// `tmux_has_session` のスモークテスト: 起動した session の有無で true/false が
+    /// 切り替わることだけを確認する。tmux 経由ポリシーに準拠した起動になっていること
+    /// 自体は `tmux_session_guard` も同じ helper を使っているので間接的に検証される。
+    #[cfg(unix)]
+    #[test]
+    fn tmux_has_session_returns_true_only_when_session_exists() {
+        if !tmux_available() {
+            eprintln!("tmux not installed; skipping tmux_has_session test");
+            return;
+        }
+        let name = format!(
+            "rai-claude-print-test-has-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        assert!(
+            !tmux_has_session(&name).unwrap(),
+            "session that was never created must not exist"
+        );
+        let create = shell::user_shell_argv(&[
+            "tmux",
+            "new-session",
+            "-d",
+            "-s",
+            name.as_str(),
+            "tail -f /dev/null",
+        ])
+        .status()
+        .expect("tmux new-session");
+        assert!(create.success(), "tmux new-session must succeed");
+        let _kill_guard = tmux_session_guard(name.clone());
+        assert!(
+            tmux_has_session(&name).unwrap(),
+            "just-created session must be reported as existing"
+        );
     }
 }
