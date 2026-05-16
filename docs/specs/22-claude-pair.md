@@ -13,6 +13,8 @@
 - 各役 (A / B) は **独立した claude セッション** を保ち、ループの中で文脈を蓄積
   していく。プロンプトを毎回送り直す必要がない。
 - `/goal` を自動で先頭に付けるので、ユーザーは「今回のゴール本文」だけ書けばよい。
+  `/goal` はユーザー側 claude 設定 (skill / slash command) で定義されている前提。
+  未定義の環境では `--prepend ""` で無効化するか、別の slash command に差し替える。
 
 ## 機能要件
 
@@ -24,6 +26,10 @@
   - `--max-cycles <N>` (default 10): A→B で 1 サイクル。`rai pair` と同じ意味。
   - `--max-hours <H>` (default 48): 累積最大実行時間。
   - `--permission-mode <MODE>`: そのまま `rai claude print` に渡す。
+  - `--output-format <FMT>`: そのまま `rai claude print` に渡す (`text` /
+    `json` / `stream-json`)。
+  - `--claude-verbose`: そのまま `rai claude print --claude-verbose` に渡す
+    (`--output-format stream-json` 併用時は claude 側の制約で必須)。
   - `--id-a <UUID>` / `--id-b <UUID>`: セッション ID を手動で指定して再開する用途。
     未指定なら起動時に RFC 4122 v4 風の新規 UUID を **A / B 別々に** 生成する。
   - `--prepend <STR>` (default `/goal`): `--prompt-a` / `--prompt-b` の先頭に

@@ -31,12 +31,17 @@
 - セッション継続ロジック:
   - 初回判定用 marker ファイル: `$XDG_STATE_HOME/rai/claude-print/<UUID>` (未設定時
     `$HOME/.local/state/rai/claude-print/<UUID>`)。
-  - marker が無い → `claude --print --session-id <UUID> ...` を実行する。
-    claude が 0 で終わったあとに marker を空ファイルで作る。
+  - marker が無い → marker を **先に** 空ファイルで作り、その後 `claude --print
+    --session-id <UUID> ...` を spawn する。claude は `--session-id` を投げた
+    瞬間に session を「登録済」にするため、応答途中で SIGKILL / OOM / 親死で
+    rai が殺されても session は claude 側に残る。marker を後書きする実装では
+    次回呼び出しが再び `--session-id` を当てて `"Session ID … is already in
+    use"` で殺されるので、必ず spawn より **先** に書く。
   - marker がある → `claude --print --resume <UUID> ...` を実行する。
-  - 非 0 終了でも marker は作成する。session 自体は既に確保されているケースが
-    多く、次回も同じ UUID を `--session-id` でぶつけると確実に二重生成エラー
-    になるため、二段目以降は `--resume` に倒すのが安全側。
+  - claude が非 0 で終わっても marker は消さない。session は既に確保されている
+    可能性が高く、二段目以降は `--resume` に倒すのが安全側。claude が起動その
+    ものに失敗するケース (PATH に無い等) では、ユーザーが marker を手動削除
+    して復帰する。
 - フラグ:
   - `--permission-mode <MODE>`: そのまま claude にパススルー。`PermissionMode` の
     値は `rai develop` と同じ 6 種 (acceptEdits / auto / bypassPermissions /
@@ -59,7 +64,10 @@
   - claude の exit code をそのまま返す。signal 死は `128 + signo`。
 - エラー:
   - `--session-id` 不在 → clap が usage error で `exit 2`。
-  - prompt が空文字列 → clap が usage error。
+  - prompt が空文字列 → rai 側で `exit 2` 相当のエラー。
+  - `--output-format stream-json` を `--claude-verbose` 無しで指定 → rai 側で
+    早期エラー (claude も同じ組合せを拒否するが、エラーメッセージが分かりづらい
+    ので rai で先に弾く)。
 
 ## 受け入れ条件
 
@@ -79,9 +87,14 @@
 - `crates/cmd/rai-cmd-claude/src/print.rs` (新規)。
 - `crates/cmd/rai-cmd-claude/src/lib.rs` に `ClaudeCmd::Print` variant を追加。
 - ユニットテスト:
-  - marker パス計算が `XDG_STATE_HOME` を尊重する。
+  - marker パス計算が `XDG_STATE_HOME` / `HOME` 各種未設定/設定パターンで期待
+    どおり。テストは `std::env` を mutate せず純粋関数で検証する。
   - 初回 / 継続でビルドされる argv が想定どおり (`--session-id` vs `--resume`)。
   - `--permission-mode` / `--output-format` / `--verbose` が argv に正しく現れる。
+  - validate: `stream-json` 単独で reject、`--claude-verbose` 併用で OK。
+- 統合テスト (stub claude スクリプト + tempdir):
+  - 同じ session-id への 1 回目 → 2 回目で `--session-id` → `--resume` に切替わる。
+  - claude が非 0 終了でも marker は残り、次回 `--resume` に倒れる。
 
 ## 非対象
 
