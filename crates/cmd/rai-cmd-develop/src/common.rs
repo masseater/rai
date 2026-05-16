@@ -381,7 +381,11 @@ where
 ///
 /// mise 未インストールや install 失敗で worktree 作成自体を巻き戻すのは過剰なので、
 /// 失敗は stderr に通知するだけでエラー伝播はしない。
-fn maybe_mise_install(path: &Path) {
+///
+/// `pub(crate)` にしているのは resume パス (= 既存 worktree を再利用) でも
+/// 同じく実行する必要があるため (`docs/specs/18-develop.md` の「新規・既存いずれの
+/// worktree でも実行する」)。
+pub(crate) fn maybe_mise_install(path: &Path) {
     let candidates = ["mise.toml", ".mise.toml"];
     if !candidates.iter().any(|name| path.join(name).exists()) {
         return;
@@ -401,7 +405,9 @@ fn maybe_mise_install(path: &Path) {
 ///
 /// lockfile が見つからない `package.json` 単独の状態は skip する (どの pm を使う
 /// か rai 側で勝手に決めない)。失敗は mise と同じく stderr 通知のみ。
-fn maybe_node_install(path: &Path) {
+///
+/// `pub(crate)` にしているのは resume パスからも呼ぶため (`maybe_mise_install` と同じ理由)。
+pub(crate) fn maybe_node_install(path: &Path) {
     if !path.join("package.json").exists() {
         return;
     }

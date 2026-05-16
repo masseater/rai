@@ -80,6 +80,12 @@ fn run_one(cmd: &Cmd, target: &Target) -> Result<()> {
     })?;
     eprintln!("worktree: {}", wt.path.display());
 
+    // 既存 worktree でも mise / pm の install を流しておく
+    // (`docs/specs/18-develop.md` の「新規・既存いずれの worktree でも実行する」)。
+    // `ensure_worktree` 側 (issue / pr) の流儀と揃える。
+    common::maybe_mise_install(&wt.path);
+    common::maybe_node_install(&wt.path);
+
     let prompt = build_resume_prompt(target, !cmd.agent.no_auto_publish)?;
     let (_shell_path, shell_kind) = shell::detect_user_shell();
     let finalizer = if cmd.agent.no_auto_publish {
