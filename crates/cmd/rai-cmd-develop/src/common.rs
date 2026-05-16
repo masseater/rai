@@ -258,18 +258,21 @@ pub fn launch(ctx: &LaunchContext, wt: &Worktree) -> Result<()> {
     let log_path = engine_log_path(&session)?;
     let wrapped_cmd = wrap_with_log(&full_cmd, &log_path, shell_kind);
 
-    let spawn = match shell::user_shell_argv(&[
-        "tmux",
-        "new-session",
-        "-d",
-        "-s",
-        &session,
-        "-c",
-        &wt.path.display().to_string(),
-        &wrapped_cmd,
-    ])
-    .status()
-    {
+    // tmux の `[shell-command]` 位置に渡す `wrapped_cmd` は、`begin; cmd | other; end
+    // 2>&1 | tee …` のようにシェルメタ文字を含む **シェルスクリプト文字列** であり、
+    // 個別 argv としてクォートしてしまうと意味が変わる読み手が出る (シングルクォート
+    // された 1 引数を tmux が default-shell -c に渡すため、結果的には動くが直感に
+    // 反する)。曖昧さを避けるため、ユーザーシェルへ渡すコマンドライン全体を 1 つの
+    // シェル文字列として組み立てて `user_shell_command` で実行する。
+    let (_user_shell, quote_kind) = shell::detect_user_shell();
+    let q = shell::quote_for(quote_kind);
+    let tmux_cmdline = format!(
+        "tmux new-session -d -s {} -c {} {}",
+        q(&session),
+        q(&wt.path.display().to_string()),
+        wrapped_cmd,
+    );
+    let spawn = match shell::user_shell_command(&tmux_cmdline).status() {
         Ok(s) => s,
         Err(e) => {
             if wt.created {

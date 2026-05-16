@@ -109,12 +109,26 @@ fn finalize_after_agent(ctx: &Cmd) -> Result<()> {
     Ok(())
 }
 
+/// finalize agent に渡すプロンプトを組み立てる。
+///
+/// **Precondition:** `has_local || has_commits` のいずれかは true である必要がある
+/// (= publish するものがある状態でだけ呼ぶ)。`finalize_after_agent` 側で「両方 false
+/// なら finalize agent を起動しない」早期リターンを行っているのでこの関数は安全に
+/// 呼べる。万一その不変条件が将来崩れた場合に panic で気付けるよう
+/// `debug_assert!` を入れ、release では未指定の状態表現にフォールバックする。
 fn build_finalize_prompt(ctx: &Cmd, has_local: bool, has_commits: bool) -> String {
+    debug_assert!(
+        has_local || has_commits,
+        "build_finalize_prompt must be called only when there is something to publish"
+    );
     let state = match (has_local, has_commits) {
         (true, true) => "未コミットの変更と未 push の commit が両方残っています",
         (true, false) => "未コミットの変更が残っています",
         (false, true) => "未 push の commit が残っています",
-        (false, false) => unreachable!("finalize agent invoked with nothing to publish"),
+        // release ビルドで万が一 (false, false) に到達してしまった場合の安全策。
+        // `unreachable!` で panic させるよりは中立な文言で続行し、agent が `git
+        // status` を見て自分で判断できるようにする。
+        (false, false) => "現在の作業状態は不明",
     };
     match ctx.flavor {
         Flavor::Issue => {

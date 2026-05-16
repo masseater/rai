@@ -301,15 +301,31 @@ fn build_resume_prompt(target: &Target, auto_publish: bool) -> Result<String> {
     })
 }
 
-fn issue_resume_prompt(url: &str, title: &str, branch: &str, _auto_publish: bool) -> String {
+fn issue_resume_prompt(url: &str, title: &str, branch: &str, auto_publish: bool) -> String {
+    // auto_publish=true (デフォルト): rai は agent 終了後に finalize agent を起動して
+    // PR 作成までの片付けを任せる。agent 側にも「PR を出すところまで」と伝え、
+    // finalize が走らなかった場合のフォールバックを兼ねる。
+    // auto_publish=false (--no-auto-publish): finalize は起動されないので、agent が
+    // 単独で PR 作成まで完了させる必要がある。
+    let publish_clause = if auto_publish {
+        "残作業を仕上げて PR を出すところまで完了させてください。\
+テスト・ビルド・lint をローカルで通し、commit & push、\
+`gh pr create` で PR を作成 (PR 本文に `Closes {url}`)。\
+既に同じブランチへの PR があれば新規作成せず、追加 push のみ行ってください。"
+    } else {
+        "残作業を仕上げて **agent 自身** で PR 作成まで完結させてください\
+ (`--no-auto-publish` 指定のため rai 側は後段の finalize agent を起動しません)。\
+テスト・ビルド・lint をローカルで通し、commit & push、\
+`gh pr create` で PR を作成 (PR 本文に `Closes {url}`)。\
+既に同じブランチへの PR があれば新規作成せず、追加 push のみ行ってください。"
+    };
+    let publish_clause = publish_clause.replace("{url}", url);
     format!(
         "GitHub Issue {url} (`{title}`) の作業を **途中から** 再開してください。\
 worktree のブランチは `{branch}`。前回のセッションは rate limit / context limit / tmux 事故などで途中終了しています。\
 最初に必ず `git status` と `git log --oneline -20` で現在の進捗 (未コミット変更・既存 commit) を把握し、\
-未コミット変更があれば論理的な単位で commit を整えながら、残作業を仕上げて PR を出すところまで完了させてください。\
-テスト・ビルド・lint をローカルで通し、commit & push、`gh pr create` で PR を作成 (PR 本文に `Closes {url}`)。\
-既に同じブランチへの PR があれば新規作成せず、追加 push のみ行ってください。\
-commit-msg hook がメッセージを弾いた場合はメッセージを直して再 commit してください。`--no-verify` 等の hook 回避は禁止です。"
+未コミット変更があれば論理的な単位で commit を整えながら、{publish_clause}\
+commit-msg hook がメッセージを弾いた場合はメッセージを直して再 commit してください。`--no-verify` 等の hook 回避は禁止です."
     )
 }
 
@@ -404,14 +420,32 @@ mod tests {
     }
 
     #[test]
-    fn issue_resume_prompt_omits_handoff_language_when_disabled() {
+    fn issue_resume_prompt_no_auto_publish_tells_agent_to_finish_pr_itself() {
         let p = issue_resume_prompt(
             "https://github.com/o/r/issues/9",
             "Resume me",
             "develop/issue-9-resume-me-20260504-101010",
             false,
         );
-        assert!(!p.contains("finalize agent"));
+        // auto_publish=false → rai の finalize agent は起動しないことを agent に伝えつつ、
+        // agent 自身が PR 作成まで完結する責務を負わせる文言が入る。
+        assert!(p.contains("--no-auto-publish"));
+        assert!(p.contains("agent 自身"));
+        // 通常パスと同様、PR 作成自体は依然として指示される。
+        assert!(p.contains("Closes https://github.com/o/r/issues/9"));
+    }
+
+    #[test]
+    fn issue_resume_prompt_auto_publish_does_not_mention_no_auto_publish_clause() {
+        let p = issue_resume_prompt(
+            "https://github.com/o/r/issues/9",
+            "Resume me",
+            "develop/issue-9-resume-me-20260504-101010",
+            true,
+        );
+        // auto_publish=true の通常パスでは `--no-auto-publish` についての但し書きが
+        // 入らない (= ふたつの分岐が確かに別物になっている)。
+        assert!(!p.contains("--no-auto-publish"));
     }
 
     #[test]
