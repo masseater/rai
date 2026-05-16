@@ -259,18 +259,24 @@ pub fn launch(ctx: &LaunchContext, wt: &Worktree) -> Result<()> {
     let wrapped_cmd = wrap_with_log(&full_cmd, &log_path, shell_kind);
 
     // tmux の `[shell-command]` 位置に渡す `wrapped_cmd` は、`begin; cmd | other; end
-    // 2>&1 | tee …` のようにシェルメタ文字を含む **シェルスクリプト文字列** であり、
-    // 個別 argv としてクォートしてしまうと意味が変わる読み手が出る (シングルクォート
-    // された 1 引数を tmux が default-shell -c に渡すため、結果的には動くが直感に
-    // 反する)。曖昧さを避けるため、ユーザーシェルへ渡すコマンドライン全体を 1 つの
-    // シェル文字列として組み立てて `user_shell_command` で実行する。
+    // 2>&1 | tee …` のようにシェルメタ文字を含む **シェルスクリプト文字列**。
+    // - これをクォートせずに `$SHELL -c "<line>"` に渡すと外側シェルが `;` や `|` を
+    //   先に解釈してしまい、tmux に届くのは先頭の `begin` だけになる (シェル二重
+    //   解釈バグ)。
+    // - 単独引数として `user_shell_argv` 経由で渡しても、外側シェル → tmux → tmux の
+    //   default-shell とコンテキストが切り替わる際に「結果的には動くが直感に反する」
+    //   形になる。
+    // したがってここでは **wrapped_cmd を 1 トークンとしてユーザーシェルでクォート**
+    // した上で、ユーザーシェルに 1 つのコマンドラインとして渡す。tmux が
+    // shell-command を default-shell -c に内部で渡してくれるため、メタ文字は最後の
+    // 1 段でだけ解釈される。
     let (_user_shell, quote_kind) = shell::detect_user_shell();
     let q = shell::quote_for(quote_kind);
     let tmux_cmdline = format!(
         "tmux new-session -d -s {} -c {} {}",
         q(&session),
         q(&wt.path.display().to_string()),
-        wrapped_cmd,
+        q(&wrapped_cmd),
     );
     let spawn = match shell::user_shell_command(&tmux_cmdline).status() {
         Ok(s) => s,
@@ -552,6 +558,42 @@ pub fn git_capture(args: &[&str]) -> Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// 単純な文字列リストを fzf で 1 つ選ばせるヘルパ。`pick_with_fzf` は `(number,
+/// title)` 形式を前提にしているので、`#0\t<value>` のような番号合成を避けたい
+/// 場面 (= branch 名や任意ラベル) で使う。キャンセル時は `UserCancelled` を返す。
+pub fn pick_string_with_fzf(items: impl IntoIterator<Item = String>) -> Result<String> {
+    let items: Vec<String> = items.into_iter().collect();
+    if items.is_empty() {
+        bail!("nothing to pick");
+    }
+    let mut fzf = shell::user_shell_argv(&["fzf"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("failed to spawn `fzf`")?;
+    {
+        let mut stdin = fzf.stdin.take().ok_or_else(|| anyhow!("fzf stdin"))?;
+        for v in &items {
+            writeln!(stdin, "{v}").ok();
+        }
+    }
+    let out = fzf.wait_with_output()?;
+    if !out.status.success() {
+        return Err(anyhow::Error::new(UserCancelled));
+    }
+    let picked = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if picked.is_empty() {
+        return Err(anyhow::Error::new(UserCancelled));
+    }
+    Ok(picked)
 }
 
 pub fn pick_with_fzf(items: impl IntoIterator<Item = (u64, String)>) -> Result<Vec<(u64, String)>> {

@@ -4,7 +4,7 @@
 //! context limit で途中終了した時の復帰用。既存 worktree を `git reset` /
 //! `git pull` で巻き戻さずに、resume 専用 prompt で agent を再起動する。
 
-use anyhow::{anyhow, bail, Context};
+use anyhow::{bail, Context};
 use clap::Args;
 use rai_core::{cli::Run, shell, Ctx, Result};
 use serde::Deserialize;
@@ -174,19 +174,10 @@ fn resolve_issue_branch(cmd: &Cmd, number: u64) -> Result<String> {
             "no local branch matching `develop/issue-{number}-*` found. Pass --branch to specify, or run `rai develop issue {number}` to start fresh."
         ),
         1 => Ok(candidates.into_iter().next().unwrap()),
-        _ => {
-            let picked = common::pick_with_fzf(
-                candidates
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, b)| (i as u64, b)),
-            )?;
-            picked
-                .into_iter()
-                .next()
-                .map(|(_, b)| b)
-                .ok_or_else(|| anyhow!("no branch picked"))
-        }
+        // 候補が複数あるときは fzf で 1 つ選ばせる。`pick_with_fzf` は `(number, title)`
+        // 用 API で `#<n>\t<value>` を画面に出してしまうので、ここでは branch 名だけを
+        // 1 行ずつ流す純粋な文字列セレクタ `pick_string_with_fzf` を使う。
+        _ => common::pick_string_with_fzf(candidates),
     }
 }
 

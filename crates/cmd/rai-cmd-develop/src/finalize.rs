@@ -181,11 +181,32 @@ fn has_publishable_commits(pr_base: Option<&str>) -> Result<bool> {
         }
     }
 
-    let Ok(upstream) = git_capture(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
-    else {
-        return Ok(false);
-    };
-    has_commits_since(upstream.trim())
+    // upstream が設定済みなら確実な答えが出る。
+    if let Ok(upstream) =
+        git_capture(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+    {
+        return has_commits_since(upstream.trim());
+    }
+
+    // upstream が未設定 (= まだ push されていない新規 branch) のフォールバック。
+    // - `origin/HEAD` が設定されていればそれを基準に未 push commit を数える。
+    // - それも無ければ「リモートのどのブランチからも到達できない commit が HEAD 上に
+    //   あるか」を `git rev-list HEAD --not --remotes=origin --count` で見る。
+    // 旧実装は単に `Ok(false)` を返していたため、未 push commit を見落として finalize
+    // agent が起動されず、ユーザーの成果物が黙って捨てられるバグになっていた。
+    if let Ok(origin_head) = git_capture(&[
+        "rev-parse",
+        "--abbrev-ref",
+        "--symbolic-full-name",
+        "origin/HEAD",
+    ]) {
+        if has_commits_since(origin_head.trim())? {
+            return Ok(true);
+        }
+    }
+
+    let count = git_capture(&["rev-list", "HEAD", "--not", "--remotes=origin", "--count"])?;
+    Ok(count.trim().parse::<u64>().unwrap_or(0) > 0)
 }
 
 fn has_commits_since(base_ref: &str) -> Result<bool> {
