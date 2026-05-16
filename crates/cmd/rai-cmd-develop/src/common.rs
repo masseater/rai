@@ -667,9 +667,15 @@ mod tests {
             Some("rai finalize"),
             Shell::Posix,
         );
-        assert!(cmd.starts_with("set -o pipefail; (agent --flag 'hello world')"));
-        assert!(cmd.contains("skip auto publish"));
-        assert!(cmd.ends_with("rai finalize"));
+        // テンプレート展開も含めて返り値が一意に決まるので、`contains` / `starts_with`
+        // ではなく `assert_eq!` で完全一致を取る (AGENTS.md Testing ガイドライン)。
+        assert_eq!(
+            cmd,
+            "set -o pipefail; (agent --flag 'hello world'); __rai_agent_status=$?; \
+             if [ \"$__rai_agent_status\" -ne 0 ]; then \
+             echo \"rai: agent exited with status $__rai_agent_status; skip auto publish\" >&2; \
+             exit \"$__rai_agent_status\"; fi; rai finalize"
+        );
     }
 
     #[test]
@@ -714,10 +720,16 @@ mod tests {
             Some("rai finalize"),
             Shell::Fish,
         );
-        assert!(cmd.starts_with(
-            "begin; ccs c1 -- 'hello world' | '/opt/rai/rai' claude format; end; set -l __rai_pipe $pipestatus"
-        ));
-        assert!(cmd.ends_with("rai finalize"));
+        // fish 分岐も入出力が一意なので exact match。
+        assert_eq!(
+            cmd,
+            "begin; ccs c1 -- 'hello world' | '/opt/rai/rai' claude format; end; \
+             set -l __rai_pipe $pipestatus; set -l __rai_agent_status 0; \
+             for s in $__rai_pipe; if test $s -ne 0; set __rai_agent_status $s; end; end; \
+             if test $__rai_agent_status -ne 0; \
+             echo \"rai: agent exited with status $__rai_agent_status; skip auto publish\" >&2; \
+             exit $__rai_agent_status; end; rai finalize"
+        );
     }
 
     #[test]

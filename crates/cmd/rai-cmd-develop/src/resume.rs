@@ -316,7 +316,7 @@ fn issue_resume_prompt(url: &str, title: &str, branch: &str, auto_publish: bool)
 worktree のブランチは `{branch}`。前回のセッションは rate limit / context limit / tmux 事故などで途中終了しています。\
 最初に必ず `git status` と `git log --oneline -20` で現在の進捗 (未コミット変更・既存 commit) を把握し、\
 未コミット変更があれば論理的な単位で commit を整えながら、{publish_clause}\
-commit-msg hook がメッセージを弾いた場合はメッセージを直して再 commit してください。`--no-verify` 等の hook 回避は禁止です."
+commit-msg hook がメッセージを弾いた場合はメッセージを直して再 commit してください。`--no-verify` 等の hook 回避は禁止です。"
     )
 }
 

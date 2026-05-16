@@ -172,23 +172,26 @@ fn has_local_changes() -> Result<bool> {
 }
 
 fn has_publishable_commits(pr_base: Option<&str>) -> Result<bool> {
+    // pr_base が明示されているケースは authoritative。`origin/{base}` または
+    // `{base}` のどちらかに新しい commit があれば true、両方とも追いついていれば
+    // **false で確定** する。ここで upstream / origin/HEAD のフォールバックに
+    // 混ぜると、HEAD と異なる base に対して "新しい commit" を誤検出して
+    // finalize agent が無駄に起動する。
     if let Some(base) = pr_base {
         if has_commits_since(&format!("origin/{base}"))? {
             return Ok(true);
         }
-        if has_commits_since(base)? {
-            return Ok(true);
-        }
+        return has_commits_since(base);
     }
 
-    // upstream が設定済みなら確実な答えが出る。
+    // pr_base 未指定: upstream が設定済みならそれが答え。
     if let Ok(upstream) =
         git_capture(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
     {
         return has_commits_since(upstream.trim());
     }
 
-    // upstream が未設定 (= まだ push されていない新規 branch) のフォールバック。
+    // upstream も未設定 (= まだ push されていない新規 branch) のフォールバック。
     // - `origin/HEAD` が設定されていればそれを基準に未 push commit を数える。
     // - それも無ければ「リモートのどのブランチからも到達できない commit が HEAD 上に
     //   あるか」を `git rev-list HEAD --not --remotes=origin --count` で見る。
