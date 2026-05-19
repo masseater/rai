@@ -1,11 +1,12 @@
 //! `rai claude` — Claude Code (`claude` CLI) と連携するサブコマンド群。
 //!
 //! 仕様: `docs/specs/04-claude-format.md` / `docs/specs/21-claude-print.md` /
-//! `docs/specs/22-claude-pair.md` 参照。
+//! `docs/specs/22-claude-pair.md` / `docs/specs/23-claude-usage.md` 参照。
 
 pub mod format;
 pub mod pair;
 pub mod print;
+pub mod usage;
 
 use clap::{Args, Subcommand};
 use rai_core::{cli::Run, Ctx, Result};
@@ -25,6 +26,8 @@ enum ClaudeCmd {
     Print(print::Cmd),
     /// 2 つのプロンプトを交互に `claude --print` で回す pair ループ。
     Pair(pair::Cmd),
+    /// ccs 全 Claude プロファイルの 5h / 7d レートリミット残量サマリを表示する。
+    Usage(usage::Cmd),
 }
 
 impl Run for Cmd {
@@ -33,6 +36,7 @@ impl Run for Cmd {
             ClaudeCmd::Format(c) => c.run(ctx),
             ClaudeCmd::Print(c) => c.run(ctx),
             ClaudeCmd::Pair(c) => c.run(ctx),
+            ClaudeCmd::Usage(c) => c.run(ctx),
         }
     }
 }
