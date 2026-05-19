@@ -20,6 +20,7 @@ rai-cmd-pair.workspace = true
 rai-cmd-date.workspace = true
 rai-cmd-gh.workspace = true
 rai-cmd-claude.workspace = true
+rai-cmd-ccs.workspace = true
 rai-cmd-dev.workspace = true
 rai-cmd-git.workspace = true
 rai-cmd-pr.workspace = true

@@ -1,4 +1,4 @@
-# 23 — `rai claude usage`
+# 23 — `rai ccs usage`
 
 ## 目的
 
@@ -14,14 +14,14 @@ Anthropic 側のレートリミット枠 (5 時間ローリング / 7 日 (週�
   Claude Code usage" を返すだけ、2026-05-19 ローカルで確認済)。
 - 結果、ユーザーは `ccs <profile>` を切り替えるときに「c1 は 5h 枠に当たりそうか」
   「c2 ならまだ余裕があるか」を勘で判断するしかない。
-- `rai claude usage` 1 発で全 ccs Claude プロファイルの 5h / 7d 枠を **横並び比較**
+- `rai ccs usage` 1 発で全 ccs Claude プロファイルの 5h / 7d 枠を **横並び比較**
   できるようにする。これにより、ユーザーは安全側に倒した profile 切替判断ができる。
 - 既存の `ccusage` (ローカル jsonl の token 合算) は累計コストを見る用途で、
   Anthropic 側のリミット枠とは別物のため代替にならない。
 
 ## 機能要件
 
-- 起動形式: `rai claude usage [OPTIONS]`
+- 起動形式: `rai ccs usage [OPTIONS]`
 - フラグ:
   - `--profile <NAME>...` (繰り返し可): 対象プロファイルを絞る。未指定なら ccs の
     `type == "account"` プロファイルを全件対象。
@@ -76,11 +76,11 @@ Anthropic 側のレートリミット枠 (5 時間ローリング / 7 日 (週�
 
 ## ユーザー受け入れ条件
 
-- [ ] `rai claude usage` を引数なしで実行すると、ccs の全 account profile が
+- [ ] `rai ccs usage` を引数なしで実行すると、ccs の全 account profile が
       1 行ずつ表に出る。
-- [ ] `rai claude usage --profile c1` のように絞り込める。
-- [ ] `rai claude usage --json` で機械可読 JSON が得られる。
-- [ ] `rai claude usage --watch 30` で 30 秒間隔で再描画され、Ctrl-C で抜ける。
+- [ ] `rai ccs usage --profile c1` のように絞り込める。
+- [ ] `rai ccs usage --json` で機械可読 JSON が得られる。
+- [ ] `rai ccs usage --watch 30` で 30 秒間隔で再描画され、Ctrl-C で抜ける。
 - [ ] 認証切れの profile があってもその行に "expired" 等のメモが出るだけで、他の
       profile は通常通り表示される。
 - [ ] アクセストークンがどの出力 (stdout / stderr / `-v` ログ) にも現れない。

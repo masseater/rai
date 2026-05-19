@@ -1,7 +1,7 @@
-//! `rai claude usage` — ccs の全 Claude プロファイルについて Anthropic 側の
+//! `rai ccs usage` — ccs の全 Claude プロファイルについて Anthropic 側の
 //! 5h / 7d レートリミット枠を 1 つの表にまとめて表示する。
 //!
-//! 仕様: `docs/specs/23-claude-usage.md` 参照。
+//! 仕様: `docs/specs/23-ccs-usage.md` 参照。
 
 use std::fs;
 use std::io::{self, IsTerminal};
@@ -14,10 +14,11 @@ use chrono::{DateTime, Local, TimeZone, Utc};
 use clap::Args;
 use rai_core::{cli::Run, shell, Ctx, Result};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 const USAGE_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
 
-/// `rai claude usage [OPTIONS]`
+/// `rai ccs usage [OPTIONS]`
 #[derive(Debug, Args)]
 pub struct Cmd {
     /// 対象プロファイル名 (繰り返し可)。未指定なら ccs の type=="account" を全件。
@@ -231,16 +232,67 @@ pub fn is_expired(expires_at_ms: Option<i64>, now_ms: i64) -> bool {
     matches!(expires_at_ms, Some(exp) if exp <= now_ms)
 }
 
-fn read_credentials(instance_path: &str) -> std::result::Result<ClaudeAiOauth, ProfileError> {
-    let path = PathBuf::from(instance_path).join(".credentials.json");
-    let bytes = match fs::read(&path) {
-        Ok(b) => b,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(ProfileError::NoCredentials),
-        Err(e) => return Err(ProfileError::Http(format!("read credentials failed: {e}"))),
-    };
-    let parsed: CredentialsFile = serde_json::from_slice(&bytes)
+/// macOS keychain の service 名: `Claude Code-credentials-<sha256(instance_path)[0..8]>`。
+/// Claude Code 本体が `CLAUDE_CONFIG_DIR` を sha256 して頭 8 hex を suffix に使う実装に
+/// 揃えている。
+pub fn keychain_service_name(instance_path: &str) -> String {
+    use std::fmt::Write as _;
+    let mut h = Sha256::new();
+    h.update(instance_path.as_bytes());
+    let digest = h.finalize();
+    let mut hex = String::with_capacity(8);
+    for b in digest.iter().take(4) {
+        let _ = write!(&mut hex, "{b:02x}");
+    }
+    format!("Claude Code-credentials-{hex}")
+}
+
+/// keychain から得た文字列を `ClaudeAiOauth` にパース。
+fn parse_credentials_str(raw: &str) -> std::result::Result<ClaudeAiOauth, ProfileError> {
+    let parsed: CredentialsFile = serde_json::from_str(raw.trim())
         .map_err(|e| ProfileError::Http(format!("parse credentials failed: {e}")))?;
     parsed.claude_ai_oauth.ok_or(ProfileError::NoCredentials)
+}
+
+fn read_credentials(instance_path: &str) -> std::result::Result<ClaudeAiOauth, ProfileError> {
+    // 1) instance 直下の .credentials.json (旧形式 / file-based)。
+    let path = PathBuf::from(instance_path).join(".credentials.json");
+    match fs::read(&path) {
+        Ok(bytes) => {
+            let s = std::str::from_utf8(&bytes)
+                .map_err(|_| ProfileError::Http("credentials.json not utf8".into()))?;
+            return parse_credentials_str(s);
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(ProfileError::Http(format!("read credentials failed: {e}"))),
+    }
+
+    // 2) macOS keychain フォールバック (新形式 / ccs 既定)。
+    read_credentials_from_keychain(instance_path)
+}
+
+#[cfg(target_os = "macos")]
+fn read_credentials_from_keychain(
+    instance_path: &str,
+) -> std::result::Result<ClaudeAiOauth, ProfileError> {
+    let service = keychain_service_name(instance_path);
+    let out = shell::user_shell_argv(&["security", "find-generic-password", "-s", &service, "-w"])
+        .output()
+        .map_err(|e| ProfileError::Http(format!("spawn security: {e}")))?;
+    if !out.status.success() {
+        // 44 = errSecItemNotFound — credentials 未作成扱いにする。
+        return Err(ProfileError::NoCredentials);
+    }
+    let s = std::str::from_utf8(&out.stdout)
+        .map_err(|_| ProfileError::Http("keychain output not utf8".into()))?;
+    parse_credentials_str(s)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_credentials_from_keychain(
+    _instance_path: &str,
+) -> std::result::Result<ClaudeAiOauth, ProfileError> {
+    Err(ProfileError::NoCredentials)
 }
 
 // ---- HTTP client trait + ureq impl ------------------------------------------
@@ -258,7 +310,7 @@ impl UreqClient {
     pub fn new(timeout: Duration) -> Self {
         let agent = ureq::AgentBuilder::new()
             .timeout(timeout)
-            .user_agent(concat!("rai-claude-usage/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("rai-ccs-usage/", env!("CARGO_PKG_VERSION")))
             .build();
         Self { agent }
     }
@@ -685,6 +737,46 @@ mod tests {
     }
 
     #[test]
+    fn keychain_service_name_matches_claude_code_format() {
+        // Claude Code が `CLAUDE_CONFIG_DIR` を sha256 して頭 8 hex 取った形式。
+        // 実機 keychain と突き合わせて固定 (2026-05-19 確認):
+        //   /Users/pc386/.ccs/instances/c1   → 65a88fb6
+        //   /Users/pc386/.ccs/instances/c2   → 2d1633fa
+        //   /Users/pc386/.ccs/instances/team → 25dad392
+        assert_eq!(
+            keychain_service_name("/Users/pc386/.ccs/instances/c1"),
+            "Claude Code-credentials-65a88fb6"
+        );
+        assert_eq!(
+            keychain_service_name("/Users/pc386/.ccs/instances/c2"),
+            "Claude Code-credentials-2d1633fa"
+        );
+        assert_eq!(
+            keychain_service_name("/Users/pc386/.ccs/instances/team"),
+            "Claude Code-credentials-25dad392"
+        );
+    }
+
+    #[test]
+    fn parse_credentials_str_round_trip() {
+        let raw = r#"{"claudeAiOauth":{"accessToken":"tok","expiresAt":1700000000000,"rateLimitTier":"default_claude_max_20x"}}"#;
+        let oauth = parse_credentials_str(raw).expect("parse");
+        assert_eq!(oauth.access_token, "tok");
+        assert_eq!(oauth.expires_at, Some(1_700_000_000_000));
+        assert_eq!(
+            oauth.rate_limit_tier.as_deref(),
+            Some("default_claude_max_20x")
+        );
+    }
+
+    #[test]
+    fn parse_credentials_str_missing_oauth_is_no_credentials() {
+        let raw = r#"{"foo":"bar"}"#;
+        let err = parse_credentials_str(raw).unwrap_err();
+        assert_eq!(err, ProfileError::NoCredentials);
+    }
+
+    #[test]
     fn snapshot_to_json_shape() {
         let snap = Snapshot {
             fetched_at: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
@@ -774,7 +866,7 @@ mod tests {
     #[test]
     fn fetch_one_no_credentials() {
         let dir = tempdir_or_skip();
-        let inst = dir.join("nope");
+        let inst = dir.join("nope-unique-no-keychain-hit");
         std::fs::create_dir_all(&inst).unwrap();
         let prof = CcsProfile {
             name: "nope".into(),
@@ -818,7 +910,7 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let dir = std::env::temp_dir().join(format!(
-            "rai-claude-usage-test-{}-{}",
+            "rai-ccs-usage-test-{}-{}",
             std::process::id(),
             nano
         ));

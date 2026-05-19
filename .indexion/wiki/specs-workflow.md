@@ -44,7 +44,7 @@ docs/specs/NN-<name>.md
 | 20 | AI prompt wording | (横断ルール) | [cmd-develop](wiki://cmd-develop) |
 | 21 | `rai claude print` | `rai claude print` | [cmd-claude](wiki://cmd-claude) |
 | 22 | `rai claude pair` | `rai claude pair` | [cmd-claude](wiki://cmd-claude) |
-| 23 | `rai claude usage` | `rai claude usage` | [cmd-claude](wiki://cmd-claude) |
+| 23 | `rai ccs usage` | `rai ccs usage` | [cmd-ccs](wiki://cmd-ccs) |
 
 ## 番号 09 が欠番
 
