@@ -12,3 +12,8 @@ Cargo.lock.bak
 
 # Local agent files
 CLAUDE.local.md
+
+# indexion: globally ignored, but commit the wiki subtree from this repo
+!.indexion/
+.indexion/*
+!.indexion/wiki/
