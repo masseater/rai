@@ -574,7 +574,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rai"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "clap",
@@ -598,7 +598,7 @@ dependencies = [
 
 [[package]]
 name = "rai-cmd-claude"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "chrono",
@@ -613,7 +613,7 @@ dependencies = [
 
 [[package]]
 name = "rai-cmd-completion"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "clap",
  "clap_complete",
@@ -622,7 +622,7 @@ dependencies = [
 
 [[package]]
 name = "rai-cmd-conflicts"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "chrono",
@@ -636,7 +636,7 @@ dependencies = [
 
 [[package]]
 name = "rai-cmd-date"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "chrono",
  "clap",
@@ -645,7 +645,7 @@ dependencies = [
 
 [[package]]
 name = "rai-cmd-dev"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "clap",
@@ -654,7 +654,7 @@ dependencies = [
 
 [[package]]
 name = "rai-cmd-develop"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "chrono",
@@ -666,7 +666,7 @@ dependencies = [
 
 [[package]]
 name = "rai-cmd-doctor"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "clap",
@@ -675,7 +675,7 @@ dependencies = [
 
 [[package]]
 name = "rai-cmd-gh"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "chrono",
@@ -687,7 +687,7 @@ dependencies = [
 
 [[package]]
 name = "rai-cmd-git"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "clap",
@@ -698,7 +698,7 @@ dependencies = [
 
 [[package]]
 name = "rai-cmd-gwq"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "clap",
@@ -709,7 +709,7 @@ dependencies = [
 
 [[package]]
 name = "rai-cmd-hello"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "clap",
  "rai-core",
@@ -718,7 +718,7 @@ dependencies = [
 
 [[package]]
 name = "rai-cmd-issue"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "chrono",
@@ -730,7 +730,7 @@ dependencies = [
 
 [[package]]
 name = "rai-cmd-pair"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "clap",
@@ -741,7 +741,7 @@ dependencies = [
 
 [[package]]
 name = "rai-cmd-pr"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "clap",
@@ -752,7 +752,7 @@ dependencies = [
 
 [[package]]
 name = "rai-cmd-repeat"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "clap",
@@ -761,7 +761,7 @@ dependencies = [
 
 [[package]]
 name = "rai-core"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "chrono",
