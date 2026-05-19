@@ -1,0 +1,1189 @@
+{
+  "provider": {
+    "kind": "tfidf",
+    "dim": 256
+  },
+  "next_vid": "119",
+  "entries": [
+    {
+      "section": {
+        "id": "overview",
+        "title": "Overview",
+        "content": "\n`rai` は作者個人のワークフローのための **拡張可能な personal CLI** で、単一バイナリとして配布される。日常的に使う外部ツール (`git` / `gh` / `gwq` / `tmux` / `claude` / `fzf` / `ccs` 等) を薄くラップし、特定の繰り返し操作を 1 コマンドに凝集する。\n\n",
+        "page_id": "overview",
+        "level": 1
+      },
+      "vid": "1"
+    },
+    {
+      "section": {
+        "id": "overview#-2",
+        "title": "設計の核",
+        "content": "\n- **1 バイナリ + サブコマンド crate 群**: トップレベルバイナリは `crates/rai/` だけ。各 `rai <subcommand>` は `crates/cmd/rai-cmd-<name>/` の独立 library crate に閉じる。新コマンド追加は enum variant 1 つと match arm 1 つの編集で完結する。詳細は [architecture](wiki://architecture) / [adding-subcommand](wiki://adding-subcommand)。\n- **共通基盤は `rai-core`**: `Run` trait, `Ctx`, logging, term, signals, proc, shell, ts, claude(共通型) は `crates/rai-core/` に集約される。詳細は [rai-core](wiki://rai-core)。\n- **外部コマンドは必ずユーザーシェル経由**: `Command::new(\"<bin>\")` の直叩きは原則禁止。`$SHELL -c` でラップして fish の function や zsh の alias もそのまま解決させる。詳細は [shell-execution-policy](wiki://shell-execution-policy)。\n- **Spec-First**: 実装前に `docs/specs/NN-<name>.md` を書く。詳細は [specs-workflow](wiki://specs-workflow)。\n\n",
+        "page_id": "overview",
+        "level": 2
+      },
+      "vid": "2"
+    },
+    {
+      "section": {
+        "id": "overview#-3",
+        "title": "サブコマンド一覧",
+        "content": "\n| Command | 用途 | ページ |\n|---|---|---|\n| `rai develop {issue,pr,resume}` | Issue/PR を起点に worktree + tmux + agent CLI を起動する | [cmd-develop](wiki://cmd-develop) |\n| `rai claude {format,print,pair,usage}` | `claude` CLI ヘルパ群 | [cmd-claude](wiki://cmd-claude) |\n| `rai conflicts {run,status,reset-failed}` | CONFLICTING PR を agent で自動解消する長時間バッチ | [cmd-conflicts](wiki://cmd-conflicts) |\n| `rai issue {inventory,triage}` / `rai pr wait` | Issue 棚卸し・triage / PR CI 完了待ち | [cmd-issue-pr](wiki://cmd-issue-pr) |\n| `rai git {autopull,track-mine}` / `rai gh rate-limit` / `rai gwq clean` / `rai dev` | リポジトリ操作系 | [cmd-git-gh-gwq-dev](wiki://cmd-git-gh-gwq-dev) |\n| `rai pair` / `rai repeat` | 長時間ループ系 | [cmd-pair-repeat](wiki://cmd-pair-repeat) |\n| `rai date` / `rai doctor` / `rai hello` / `rai completion` | 小物 | [cmd-misc](wiki://cmd-misc) |\n\n",
+        "page_id": "overview",
+        "level": 2
+      },
+      "vid": "3"
+    },
+    {
+      "section": {
+        "id": "overview#see-also-4",
+        "title": "See Also",
+        "content": "\n- [getting-started](wiki://getting-started) — install と最初のコマンド\n- [architecture](wiki://architecture) — workspace 構造とディスパッチ\n- [specs-workflow](wiki://specs-workflow) — Spec-First ルールと仕様カタログ\n",
+        "page_id": "overview",
+        "level": 2
+      },
+      "vid": "4"
+    },
+    {
+      "section": {
+        "id": "getting-started",
+        "title": "Getting Started",
+        "content": "\n",
+        "page_id": "getting-started",
+        "level": 1
+      },
+      "vid": "5"
+    },
+    {
+      "section": {
+        "id": "getting-started#install-2",
+        "title": "Install",
+        "content": "\nHomebrew tap (推奨):\n\n```sh\nbrew tap masseater/rai\nbrew install rai\n```\n\nソースから:\n\n```sh\ncargo install --path crates/rai\n```\n\nリリースは `cargo-dist` で配布される (`dist-workspace.toml` / `.github/workflows/release.yml`)。\n\n",
+        "page_id": "getting-started",
+        "level": 2
+      },
+      "vid": "6"
+    },
+    {
+      "section": {
+        "id": "getting-started#verify-3",
+        "title": "Verify",
+        "content": "\n`rai` は外部 CLI に大きく依存する。新しい環境ではまず `doctor` で揃っているか確認する:\n\n```sh\nrai doctor\n```\n\n詳細は [cmd-misc](wiki://cmd-misc)。\n\n",
+        "page_id": "getting-started",
+        "level": 2
+      },
+      "vid": "7"
+    },
+    {
+      "section": {
+        "id": "getting-started#-4",
+        "title": "最初のコマンド",
+        "content": "\n```sh\nrai --help                      # サブコマンド一覧\nrai <subcommand> --help         # 個別ヘルプ\nrai date                        # 動作確認用に軽いもの\n```\n\nログ詳細度は `-v` または `RAI_LOG=debug` で上げる:\n\n```sh\nRAI_LOG=debug rai pr wait <PR>\n```\n\n",
+        "page_id": "getting-started",
+        "level": 2
+      },
+      "vid": "8"
+    },
+    {
+      "section": {
+        "id": "getting-started#-5",
+        "title": "開発コマンド",
+        "content": "\n| Command | 用途 |\n|---|---|\n| `cargo fmt --all` | フォーマット |\n| `cargo clippy --workspace --all-targets -- -D warnings` | Lint (CI と同じく warning は error 扱い) |\n| `cargo test --workspace` | テスト |\n| `cargo run -p rai -- <subcommand> [args]` | サブコマンドをローカル実行 |\n\nCI (Linux + macOS) はこの 3 つを揃って green にする (`.github/workflows/ci.yml`)。push 前にローカルで通すこと。\n\n",
+        "page_id": "getting-started",
+        "level": 2
+      },
+      "vid": "9"
+    },
+    {
+      "section": {
+        "id": "getting-started#shell-completion-6",
+        "title": "Shell Completion",
+        "content": "\n```sh\n",
+        "page_id": "getting-started",
+        "level": 2
+      },
+      "vid": "10"
+    },
+    {
+      "section": {
+        "id": "getting-started#fish--7",
+        "title": "fish: 今のセッションだけ",
+        "content": "rai completion fish | source\n\n",
+        "page_id": "getting-started",
+        "level": 2
+      },
+      "vid": "11"
+    },
+    {
+      "section": {
+        "id": "getting-started#-rai----source--8",
+        "title": "永続化: rai の更新でも追従させる --source 推奨",
+        "content": "rai completion --source fish >> ~/.config/fish/config.fish\nrai completion --source zsh  >> ~/.zshrc\nrai completion --source bash >> ~/.bashrc\n```\n\n`--source` はバイナリパスから補完を再ロードする小さなスニペットを吐く。バイナリを差し替えてもシェル再起動だけで補完が追従する。\n\n",
+        "page_id": "getting-started",
+        "level": 2
+      },
+      "vid": "12"
+    },
+    {
+      "section": {
+        "id": "getting-started#-9",
+        "title": "次に読む",
+        "content": "\n- [overview](wiki://overview) — `rai` 全体像\n- [architecture](wiki://architecture) — workspace 構造\n- [cmd-develop](wiki://cmd-develop) — 中心となる develop ワークフロー\n",
+        "page_id": "getting-started",
+        "level": 2
+      },
+      "vid": "13"
+    },
+    {
+      "section": {
+        "id": "architecture",
+        "title": "Architecture",
+        "content": "\n`rai` は Cargo workspace。バイナリは `rai` 1 つだけで、サブコマンドはすべて library crate として並ぶ。\n\n",
+        "page_id": "architecture",
+        "level": 1
+      },
+      "vid": "14"
+    },
+    {
+      "section": {
+        "id": "architecture#workspace--2",
+        "title": "Workspace 構成",
+        "content": "\n```\ncrates/\n├── rai/           ← binary crate。CLI parse + dispatch のみ\n├── rai-core/      ← 共通基盤 (Run trait, Ctx, shell, logging, ...)\n└── cmd/\n    └── rai-cmd-*/ ← サブコマンドごとの library crate\n```\n\n`Cargo.toml` の `[workspace.dependencies]` に各 crate がパス指定で並んでおり、`rai` 本体と `rai-cmd-*` は `<dep>.workspace = true` でこれを参照する。バージョン・edition・rust-version・license は `[workspace.package]` から継承する。\n\n",
+        "page_id": "architecture",
+        "level": 2
+      },
+      "vid": "15"
+    },
+    {
+      "section": {
+        "id": "architecture#dispatch--3",
+        "title": "Dispatch の仕組み",
+        "content": "\n`crates/rai/src/main.rs` は薄い:\n\n```rust\nenum Cmd {\n    Hello(rai_cmd_hello::Cmd),\n    Develop(rai_cmd_develop::Cmd),\n    Claude(rai_cmd_claude::Cmd),\n    // ... 1 サブコマンド = 1 variant\n}\n\nimpl Run for Cmd {\n    fn run(self, ctx: &Ctx) -> Result<()> {\n        match self {\n            Cmd::Hello(c)   => c.run(ctx),\n            Cmd::Develop(c) => c.run(ctx),\n            // ...\n        }\n    }\n}\n```\n\n各 `rai-cmd-<name>` crate は `pub struct Cmd` (`#[derive(clap::Args)]`) を公開し、`rai_core::cli::Run` を実装する。トップレベル `Cmd` enum の variant がそれを wrap するだけ。\n\n",
+        "page_id": "architecture",
+        "level": 2
+      },
+      "vid": "16"
+    },
+    {
+      "section": {
+        "id": "architecture#-rai-completion-4",
+        "title": "例外: `rai completion`",
+        "content": "\n`rai-cmd-completion` は補完スクリプトを生成するためにトップレベル `Cli::command()` (`clap::Command` ツリー) を必要とする。そのため `main.rs` の match arm は `Cmd::Completion(c) => c.print(&mut Cli::command())` と書かれており、`Run::run` を経由しない唯一の経路になっている。`crates/rai/src/main.rs` を一般化する際にこの分岐は残すこと。\n\n",
+        "page_id": "architecture",
+        "level": 2
+      },
+      "vid": "17"
+    },
+    {
+      "section": {
+        "id": "architecture#exit-code-130-5",
+        "title": "Exit Code 130",
+        "content": "\nユーザーが対話 UI (fzf 等) をキャンセルすると `rai_cmd_develop::common::UserCancelled` が `Result::Err` で伝搬する。`main.rs` はこれを downcast して `exit(130)` する。`std::process::exit` 直接呼びは `Result` の destructors を巻き戻さないので、必ず `bail!(UserCancelled)` 経由で `main` まで戻す。\n\n",
+        "page_id": "architecture",
+        "level": 2
+      },
+      "vid": "18"
+    },
+    {
+      "section": {
+        "id": "architecture#-6",
+        "title": "依存関係ルール",
+        "content": "\n| ルール | 理由 |\n|---|---|\n| `rai-cmd-*` → `rai-core` のみ参照 | サブコマンド間の crate 依存禁止。共通化が必要なら `rai-core` に上げる。 |\n| 共通サードパーティは `[workspace.dependencies]` に登録 | バージョン分散を防ぐ。crate 側は `<dep>.workspace = true`。 |\n| `[[bin]]` を増やさない | バイナリは `rai` 1 つだけ。サブコマンドは必ず library crate。 |\n| 後方互換は追わない | 個人 CLI なので理想形を優先する (workspace `AGENTS.md` 参照)。 |\n\n",
+        "page_id": "architecture",
+        "level": 2
+      },
+      "vid": "19"
+    },
+    {
+      "section": {
+        "id": "architecture#release-profile-7",
+        "title": "Release Profile",
+        "content": "\n```toml\n[profile.release]\nlto = \"thin\"\ncodegen-units = 1\nstrip = \"symbols\"\npanic = \"abort\"\n```\n\n`panic = \"abort\"` のため、panic 中に terminal 復元したい処理は `panic_hook` ([rai-core](wiki://rai-core) 参照) に登録しておく必要がある。\n\n",
+        "page_id": "architecture",
+        "level": 2
+      },
+      "vid": "20"
+    },
+    {
+      "section": {
+        "id": "architecture#see-also-8",
+        "title": "See Also",
+        "content": "\n- [rai-core](wiki://rai-core) — 共通基盤の中身\n- [adding-subcommand](wiki://adding-subcommand) — 新規サブコマンド追加手順\n- [shell-execution-policy](wiki://shell-execution-policy) — 外部コマンド起動の流儀\n",
+        "page_id": "architecture",
+        "level": 2
+      },
+      "vid": "21"
+    },
+    {
+      "section": {
+        "id": "rai-core",
+        "title": "rai-core",
+        "content": "\n`rai-core` は workspace 全体の **共通基盤**。`rai-cmd-*` はこの crate にのみ依存し、サブコマンド同士は直接依存しない。Cross-cutting な関心事はすべてここに置く。\n\n",
+        "page_id": "rai-core",
+        "level": 1
+      },
+      "vid": "22"
+    },
+    {
+      "section": {
+        "id": "rai-core#-2",
+        "title": "モジュール一覧",
+        "content": "\n| Module | 役割 |\n|---|---|\n| `lib.rs` | `Ctx`, `Result`, `Context` の再エクスポート |\n| `cli` | `Run` trait |\n| `logging` | `tracing-subscriber` 初期化 (`-v` / `RAI_LOG`) |\n| `term` | 端末ユーティリティ (raw mode, alt-screen, `StatusBar` 等。`crossterm` ベース) |\n| `signals` | `signal-hook` ベースの割込みハンドリング |\n| `proc` | 子プロセス起動ヘルパ (`libc` 依存) |\n| `shell` | `$SHELL -c` ラップとシェル別 quoting。[shell-execution-policy](wiki://shell-execution-policy) |\n| `ts` | タイムスタンプ整形 (`chrono`) |\n| `claude` | `PermissionMode` 等、Claude CLI 共有型 |\n| `panic_hook` | panic 時に端末を復元してから panic を出すフック |\n\n",
+        "page_id": "rai-core",
+        "level": 2
+      },
+      "vid": "23"
+    },
+    {
+      "section": {
+        "id": "rai-core#-api-3",
+        "title": "主要 API",
+        "content": "\n",
+        "page_id": "rai-core",
+        "level": 2
+      },
+      "vid": "24"
+    },
+    {
+      "section": {
+        "id": "rai-core#run-trait-4",
+        "title": "`Run` trait",
+        "content": "\n```rust\npub trait Run {\n    fn run(self, ctx: &Ctx) -> Result<()>;\n}\n```\n\n全サブコマンドの `Cmd` 型が実装する。`rai-core::cli::Run` を経由してトップレベル enum が dispatch する ([architecture](wiki://architecture))。\n\n",
+        "page_id": "rai-core",
+        "level": 2
+      },
+      "vid": "25"
+    },
+    {
+      "section": {
+        "id": "rai-core#ctx-5",
+        "title": "`Ctx`",
+        "content": "\n```rust\n#[derive(Debug, Clone, Default)]\npub struct Ctx {}\n```\n\n現状は空構造体。HTTP クライアント・設定ファイル・キャッシュディレクトリのような **グローバル状態を持つときは必ずここに入れる**。サブコマンドが個別に Singleton を作って結合しないための受け皿。\n\n",
+        "page_id": "rai-core",
+        "level": 2
+      },
+      "vid": "26"
+    },
+    {
+      "section": {
+        "id": "rai-core#result--context-6",
+        "title": "`Result` / `Context`",
+        "content": "\n`anyhow::{Result, Context}` をそのまま再エクスポート。`bail!` / `anyhow!` も呼び出し側で `anyhow::` を直接使う。\n\n",
+        "page_id": "rai-core",
+        "level": 2
+      },
+      "vid": "27"
+    },
+    {
+      "section": {
+        "id": "rai-core#logginginit-7",
+        "title": "`logging::init`",
+        "content": "\n`main.rs` から 1 回だけ呼ぶ。`-v` フラグまたは `RAI_LOG=...` で詳細度を制御する。\n\n",
+        "page_id": "rai-core",
+        "level": 2
+      },
+      "vid": "28"
+    },
+    {
+      "section": {
+        "id": "rai-core#panichookinstallpanicrestore-8",
+        "title": "`panic_hook::install_panic_restore`",
+        "content": "\n`StatusBar` や raw mode を使う長時間サブコマンドは、起動時にこれを呼んで panic 時の端末復元を保証する。`panic = \"abort\"` プロファイルなので drop は走らない前提で書く。\n\n",
+        "page_id": "rai-core",
+        "level": 2
+      },
+      "vid": "29"
+    },
+    {
+      "section": {
+        "id": "rai-core#shell-9",
+        "title": "`shell::*`",
+        "content": "\n外部コマンドを起動する **唯一の正規ルート**。`Command::new(\"<bin>\")` を新たに書かない。詳細は [shell-execution-policy](wiki://shell-execution-policy)。\n\n",
+        "page_id": "rai-core",
+        "level": 2
+      },
+      "vid": "30"
+    },
+    {
+      "section": {
+        "id": "rai-core#-10",
+        "title": "設計ルール",
+        "content": "\n- **stable な公開 API を保つ**: 全 `rai-cmd-*` が同時に依存しているため、`rai-core` の API 変更は workspace 全体の同時リファクタとして扱う。単一 crate 変更ではない。\n- **サブコマンド固有のロジックを混ぜない**: 1 つのサブコマンドしか使わないものは、そのサブコマンドの crate に閉じておく。早すぎる共通化は `rai-core` を肥らせる。\n- **`Ctx` の拡張は慎重に**: 全サブコマンドが受け取る型なので、追加フィールドはすべての crate に影響する。\n\n",
+        "page_id": "rai-core",
+        "level": 2
+      },
+      "vid": "31"
+    },
+    {
+      "section": {
+        "id": "rai-core#development-commands-11",
+        "title": "Development Commands",
+        "content": "\n```sh\ncargo build -p rai-core\ncargo test  -p rai-core\n```\n\n`crates/rai-core/tests/shell_smoke.rs` は実シェルを叩く統合テスト。CI でも走る。\n\n",
+        "page_id": "rai-core",
+        "level": 2
+      },
+      "vid": "32"
+    },
+    {
+      "section": {
+        "id": "rai-core#see-also-12",
+        "title": "See Also",
+        "content": "\n- [architecture](wiki://architecture) — workspace 全体の俯瞰\n- [shell-execution-policy](wiki://shell-execution-policy) — `shell` モジュールの背景\n- [adding-subcommand](wiki://adding-subcommand) — `rai-core` をどう使うか\n",
+        "page_id": "rai-core",
+        "level": 2
+      },
+      "vid": "33"
+    },
+    {
+      "section": {
+        "id": "shell-execution-policy",
+        "title": "Shell Execution Policy",
+        "content": "\n`rai` は **個人向け CLI** であり、ユーザーが日常使うシェル (fish / zsh / bash 等) の機能 — function, alias, builtin, パイプ, リダイレクト — を **そのまま** 受け取れることを体験の核とする。仕様: `docs/specs/16-shell-execution-policy.md`。\n\n",
+        "page_id": "shell-execution-policy",
+        "level": 1
+      },
+      "vid": "34"
+    },
+    {
+      "section": {
+        "id": "shell-execution-policy#-2",
+        "title": "基本原則",
+        "content": "\n**外部コマンドは必ずユーザーのデフォルトシェル (`$SHELL`) 経由で起動する。**\n\n`std::process::Command::new(\"<bin>\")` の `execvp` 直叩きは **禁止**。理由:\n\n- `execvp` は PATH 上の実バイナリしか解決できない\n- fish の `function ccs_print` や zsh の `alias` は実バイナリではないので ENOENT になる\n- `rai develop` の `--engine-cmd \"ccs_print c1 ...\"` のようなユーザー入力が動かなくなる\n\n代わりに `Command::new($SHELL).arg(\"-c\").arg(\"<cmd>\")` でラップする。\n\n",
+        "page_id": "shell-execution-policy",
+        "level": 2
+      },
+      "vid": "35"
+    },
+    {
+      "section": {
+        "id": "shell-execution-policy#-api-raicoreshell-3",
+        "title": "正規 API: `rai_core::shell`",
+        "content": "\n`Command::new` を新たに書かず、必ずこのモジュールを通す。\n\n| 関数 | 用途 |\n|---|---|\n| `shell::user_shell_path()` | `$SHELL` を解決。未設定なら `/bin/sh`。 |\n| `shell::detect_shell_kind(path)` | basename が `fish` なら `Shell::Fish`、それ以外は `Shell::Posix`。 |\n| `shell::detect_user_shell()` | パスと種別を一括取得。 |\n| `shell::user_shell_argv(&[\"bin\", \"arg1\", \"arg2\"])` | 引数列を `$SHELL -c` で実行する `Command`。`Command::new(...).args(...)` の置き換え。 |\n| `shell::user_shell_command(\"foo \\| bar\")` | ユーザー入力のシェル文字列をそのまま `$SHELL -c` で実行。 |\n| `shell::shell_command(shell_path, cmd)` | パス指定の低レベル版。`Command::new(shell_path)` を呼ぶのはここだけ (ポリシー上の唯一の例外)。 |\n| `shell::quote_for(kind)` / `shell::quote_posix` / `shell::quote_fish` | シェル種別ごとのクォート。 |\n| `shell::quote_path(kind, path)` | パスを引用済み文字列に。 |\n\n",
+        "page_id": "shell-execution-policy",
+        "level": 2
+      },
+      "vid": "36"
+    },
+    {
+      "section": {
+        "id": "shell-execution-policy#-4",
+        "title": "引用ルール",
+        "content": "\nPOSIX と fish はシングルクォート内のエスケープが異なるので別関数。\n\n- POSIX: `shell_words::quote` をそのまま。`a b` → `'a b'`。\n- fish: シングルクォート内は `\\\\` と `\\'` のみエスケープ。`it's` → `'it\\'s'`、`a\\b` → `'a\\\\b'`。\n\n",
+        "page_id": "shell-execution-policy",
+        "level": 2
+      },
+      "vid": "37"
+    },
+    {
+      "section": {
+        "id": "shell-execution-policy#-5",
+        "title": "シェル別構文",
+        "content": "\nユーザーシェル経由でラップした全体コマンドはユーザーシェルで実行される。POSIX と fish の構文を混在させない:\n\n| 機能 | POSIX | Fish |\n|---|---|---|\n| pipefail | `set -o pipefail` | (なし。代替: `$pipestatus` を走査) |\n| 直前 exit code | `$?` | `$status` |\n| 条件分岐 | `[ \"$x\" -ne 0 ]` | `test \"$x\" -ne 0` |\n| 複合ブロック | `( ... ); rc=$?` | `begin; ...; end` |\n\n`rai develop` の `build_posix_agent_block` / `build_fish_agent_block` は両方を抱える参考実装。新規にラップを書く場合も同じパターンで分岐させる。\n\n",
+        "page_id": "shell-execution-policy",
+        "level": 2
+      },
+      "vid": "38"
+    },
+    {
+      "section": {
+        "id": "shell-execution-policy#-6",
+        "title": "ユーザー入力の扱い",
+        "content": "\n`--engine-cmd`, `--on-update`, `--agent-cmd` のような **ユーザー入力のシェル文字列** は:\n\n- **トークン分割しない**: そのまま `$SHELL -c` に渡す。fish function やパイプ・リダイレクトを保持するため。\n- **クォートし直さない**: ユーザーは既にシェル文字列として書いている。\n\n逆に rai 内部で引数列を組み立てて起動するときは `user_shell_argv(&[...])` を使い、各要素を `quote_for(kind)` で引用する。\n\n",
+        "page_id": "shell-execution-policy",
+        "level": 2
+      },
+      "vid": "39"
+    },
+    {
+      "section": {
+        "id": "shell-execution-policy#-execvp--7",
+        "title": "例外: `execvp` 直叩きが許される唯一のケース",
+        "content": "\n`shell::shell_command` の内部で `Command::new(shell_path)` を呼ぶときだけ。それ以外のところで `Command::new` を書いてはいけない。\n\n",
+        "page_id": "shell-execution-policy",
+        "level": 2
+      },
+      "vid": "40"
+    },
+    {
+      "section": {
+        "id": "shell-execution-policy#good-example-8",
+        "title": "Good Example",
+        "content": "\n```rust\nuse rai_core::shell;\n\nlet st = shell::user_shell_argv(&[\"gh\", \"pr\", \"list\", \"--state\", \"open\"])\n    .status()?;\n```\n\n",
+        "page_id": "shell-execution-policy",
+        "level": 2
+      },
+      "vid": "41"
+    },
+    {
+      "section": {
+        "id": "shell-execution-policy#bad-example-9",
+        "title": "Bad Example",
+        "content": "\n```rust\n// fish function / alias が解決されず ENOENT になる。禁止。\nlet st = std::process::Command::new(\"gh\")\n    .args([\"pr\", \"list\", \"--state\", \"open\"])\n    .status()?;\n```\n\n",
+        "page_id": "shell-execution-policy",
+        "level": 2
+      },
+      "vid": "42"
+    },
+    {
+      "section": {
+        "id": "shell-execution-policy#see-also-10",
+        "title": "See Also",
+        "content": "\n- [rai-core](wiki://rai-core) — `shell` モジュールの位置づけ\n- [cmd-develop](wiki://cmd-develop) — `--engine-cmd` プレースホルダ展開の応用例\n- [architecture](wiki://architecture) — ポリシーが workspace 全体に効く理由\n",
+        "page_id": "shell-execution-policy",
+        "level": 2
+      },
+      "vid": "43"
+    },
+    {
+      "section": {
+        "id": "adding-subcommand",
+        "title": "Adding a New Subcommand",
+        "content": "\n新規 `rai <name>` を足すときの手順。`crates/cmd/rai-cmd-hello` がテンプレート。\n\n",
+        "page_id": "adding-subcommand",
+        "level": 1
+      },
+      "vid": "44"
+    },
+    {
+      "section": {
+        "id": "adding-subcommand#0-spec--2",
+        "title": "0. Spec を先に書く",
+        "content": "\n実装より先に `docs/specs/NN-<name>.md` を作る。`NN` は次の連番。詳細は [specs-workflow](wiki://specs-workflow)。\n\n",
+        "page_id": "adding-subcommand",
+        "level": 2
+      },
+      "vid": "45"
+    },
+    {
+      "section": {
+        "id": "adding-subcommand#1--3",
+        "title": "1. テンプレートを複製",
+        "content": "\n```sh\ncp -r crates/cmd/rai-cmd-hello crates/cmd/rai-cmd-<name>\n```\n\n",
+        "page_id": "adding-subcommand",
+        "level": 2
+      },
+      "vid": "46"
+    },
+    {
+      "section": {
+        "id": "adding-subcommand#2--crate--cargotoml--4",
+        "title": "2. 新 crate の `Cargo.toml` を編集",
+        "content": "\n`crates/cmd/rai-cmd-<name>/Cargo.toml`:\n\n```toml\n[package]\nname = \"rai-cmd-<name>\"\ndescription = \"...\"   # clap の help 行に出る。短く正確に。\nversion.workspace      = true\nedition.workspace      = true\nrust-version.workspace = true\nlicense.workspace      = true\nrepository.workspace   = true\nauthors.workspace      = true\n\n[dependencies]\nrai-core.workspace = true\nclap.workspace     = true\nanyhow.workspace   = true\n",
+        "page_id": "adding-subcommand",
+        "level": 2
+      },
+      "vid": "47"
+    },
+    {
+      "section": {
+        "id": "adding-subcommand#-5",
+        "title": "必要なものだけ追加する",
+        "content": "```\n\nサードパーティ deps は `[workspace.dependencies]` から `<dep>.workspace = true` で取る。新規に共通化したいものは root `Cargo.toml` に追加。\n\n",
+        "page_id": "adding-subcommand",
+        "level": 2
+      },
+      "vid": "48"
+    },
+    {
+      "section": {
+        "id": "adding-subcommand#3-srclibrs--6",
+        "title": "3. `src/lib.rs` を書く",
+        "content": "\n```rust\n//! `rai <name>` — <short description>.\n//!\n//! 仕様: `docs/specs/NN-<name>.md`.\n\nuse clap::Args;\nuse rai_core::{cli::Run, Ctx, Result};\n\n#[derive(Debug, Args)]\npub struct Cmd {\n    // --flag fields\n}\n\nimpl Run for Cmd {\n    fn run(self, _ctx: &Ctx) -> Result<()> {\n        // ...\n        Ok(())\n    }\n}\n```\n\n**`pub struct Cmd` の名前は必ず `Cmd`**。`rai-core::cli::Run` を実装する。詳細は [rai-core](wiki://rai-core)。\n\nサブサブコマンドを持つ場合は `Subcommand` enum を追加し、`Cmd` 内に `#[command(subcommand)]` で埋める。`rai-cmd-claude` / `rai-cmd-develop` / `rai-cmd-conflicts` 等が参考実装 ([cmd-claude](wiki://cmd-claude) / [cmd-develop](wiki://cmd-develop) / [cmd-conflicts](wiki://cmd-conflicts))。\n\n",
+        "page_id": "adding-subcommand",
+        "level": 2
+      },
+      "vid": "49"
+    },
+    {
+      "section": {
+        "id": "adding-subcommand#4--shell--7",
+        "title": "4. 外部コマンドを呼ぶ場合は `shell::` 経由",
+        "content": "\n```rust\nuse rai_core::shell;\n\nlet st = shell::user_shell_argv(&[\"gh\", \"pr\", \"list\", \"--state\", \"open\"])\n    .status()?;\n```\n\n`Command::new(\"<bin>\")` を直接書かない。詳細は [shell-execution-policy](wiki://shell-execution-policy)。\n\n",
+        "page_id": "adding-subcommand",
+        "level": 2
+      },
+      "vid": "50"
+    },
+    {
+      "section": {
+        "id": "adding-subcommand#5-workspace--8",
+        "title": "5. Workspace に登録",
+        "content": "\nルート `Cargo.toml` の `[workspace.dependencies]` に追加:\n\n```toml\nrai-cmd-<name> = { path = \"crates/cmd/rai-cmd-<name>\", version = \"0.1.0\" }\n```\n\n`crates/rai/Cargo.toml` の `[dependencies]` に:\n\n```toml\nrai-cmd-<name>.workspace = true\n```\n\n",
+        "page_id": "adding-subcommand",
+        "level": 2
+      },
+      "vid": "51"
+    },
+    {
+      "section": {
+        "id": "adding-subcommand#6-dispatcher--variant--9",
+        "title": "6. Dispatcher に variant 追加",
+        "content": "\n`crates/rai/src/main.rs`:\n\n```rust\nenum Cmd {\n    // ...既存\n    /// <description>\n    YourName(rai_cmd_<name>::Cmd),\n}\n\nimpl Run for Cmd {\n    fn run(self, ctx: &Ctx) -> Result<()> {\n        match self {\n            // ...既存\n            Cmd::YourName(c) => c.run(ctx),\n        }\n    }\n}\n```\n\n",
+        "page_id": "adding-subcommand",
+        "level": 2
+      },
+      "vid": "52"
+    },
+    {
+      "section": {
+        "id": "adding-subcommand#7--10",
+        "title": "7. 検証",
+        "content": "\n```sh\ncargo build -p rai-cmd-<name>\ncargo test  -p rai-cmd-<name>\ncargo run   -p rai -- <name> --help\n\n",
+        "page_id": "adding-subcommand",
+        "level": 2
+      },
+      "vid": "53"
+    },
+    {
+      "section": {
+        "id": "adding-subcommand#workspace--11",
+        "title": "workspace 全体",
+        "content": "cargo fmt --all\ncargo clippy --workspace --all-targets -- -D warnings\ncargo test --workspace\n```\n\nCI と同じく warning 0 を保つ。\n\n",
+        "page_id": "adding-subcommand",
+        "level": 2
+      },
+      "vid": "54"
+    },
+    {
+      "section": {
+        "id": "adding-subcommand#8-rai-doctor---cli--12",
+        "title": "8. `rai doctor` に登録 外部 CLI を新規依存させた場合のみ",
+        "content": "\n`crates/cmd/rai-cmd-doctor/src/lib.rs` の `REQUIRED_TOOLS` に追加。`rai doctor` で missing が検出できるようにしておく ([cmd-misc](wiki://cmd-misc))。\n\n",
+        "page_id": "adding-subcommand",
+        "level": 2
+      },
+      "vid": "55"
+    },
+    {
+      "section": {
+        "id": "adding-subcommand#-13",
+        "title": "禁止事項",
+        "content": "\n- 別の `rai-cmd-*` crate に依存しない。共通ロジックは `rai-core` に上げる。\n- `[[bin]]` を増やさない。バイナリは `rai` 1 つだけ。\n- 仕様書を書かずに着手しない。\n\n",
+        "page_id": "adding-subcommand",
+        "level": 2
+      },
+      "vid": "56"
+    },
+    {
+      "section": {
+        "id": "adding-subcommand#see-also-14",
+        "title": "See Also",
+        "content": "\n- [architecture](wiki://architecture) — workspace 全体像\n- [rai-core](wiki://rai-core) — 共通基盤に何があるか\n- [shell-execution-policy](wiki://shell-execution-policy) — 外部コマンド起動規約\n- [specs-workflow](wiki://specs-workflow) — Spec-First ルール\n",
+        "page_id": "adding-subcommand",
+        "level": 2
+      },
+      "vid": "57"
+    },
+    {
+      "section": {
+        "id": "cmd-develop",
+        "title": "rai develop",
+        "content": "\nIssue / PR を起点に **worktree + tmux + agent CLI** を一気に起動する。`rai` でもっとも複雑なサブコマンドであり、Issue 着手・PR 救済・セッション再開を 1 系統に統合した中心機能。仕様: `docs/specs/18-develop.md` / `docs/specs/19-develop-resume.md`。\n\n",
+        "page_id": "cmd-develop",
+        "level": 1
+      },
+      "vid": "58"
+    },
+    {
+      "section": {
+        "id": "cmd-develop#-2",
+        "title": "サブコマンド",
+        "content": "\n| Command | 用途 |\n|---|---|\n| `rai develop issue <ISSUE>` | 新規 Issue から worktree を作って agent を回し、PR まで仕上げる |\n| `rai develop pr <PR>` | 既存 PR の worktree でコンフリクト解消 / CI 修正 |\n| `rai develop resume <ISSUE\\|PR>` | 既存 worktree を破壊せず agent セッションだけ立て直す |\n| `rai develop finalize-agent` (hidden) | agent 完了後に commit / push / `gh pr create` を任せる内部 hook |\n\n",
+        "page_id": "cmd-develop",
+        "level": 2
+      },
+      "vid": "59"
+    },
+    {
+      "section": {
+        "id": "cmd-develop#-3",
+        "title": "共通の起動フロー",
+        "content": "\n`crates/cmd/rai-cmd-develop/src/common.rs` が起動骨格を提供する:\n\n1. **Worktree 準備**: `gwq` で worktree を作る (Issue) / 既存 PR worktree に入る (PR)。\n2. **Prompt 構築**: `--prompt-template` 指定があれば読み込み、なければ default prompt を組み立てる。\n3. **engine_cmd 展開**: `--engine-cmd` のプレースホルダ (`{PROMPT}`, `{PERMISSION_MODE}`, `{RAI}`) を置換。\n4. **agent ブロック構築**: pipefail 擬似実装 (POSIX は `set -o pipefail` / fish は `$pipestatus`) で包む。\n5. **tmux セッション起動**: agent コマンド + finalizer ブロックを `$SHELL -c` でラップして `tmux new-session` に渡す。\n6. **fail-fast 確認**: 起動 750 ms 後にセッション生存を確認、即死していれば `/tmp/rai-develop/<session>.log` の末尾を吐いて非ゼロ exit。\n\n",
+        "page_id": "cmd-develop",
+        "level": 2
+      },
+      "vid": "60"
+    },
+    {
+      "section": {
+        "id": "cmd-develop#--engine-cmd--4",
+        "title": "`--engine-cmd` 既定値",
+        "content": "\n```\nccs c1 --print --output-format stream-json --verbose {PERMISSION_MODE} -- {PROMPT} | {RAI} claude format\n```\n\n- 全工程が `$SHELL -c` を通るので、`ccs_print` のような fish function でも解決される ([shell-execution-policy](wiki://shell-execution-policy))。\n- パイプライン形にしてあるのは「どのシェルでも安定して動く」「失敗時にどの段階で落ちたか分かる」ため。\n- プレースホルダを 1 つも含まない `--engine-cmd` を渡したときは legacy 互換で末尾に `--permission-mode <MODE>` と shell-quote 済み prompt を append する。\n\n",
+        "page_id": "cmd-develop",
+        "level": 2
+      },
+      "vid": "61"
+    },
+    {
+      "section": {
+        "id": "cmd-develop#permissionmode-5",
+        "title": "`PermissionMode`",
+        "content": "\n`claude --permission-mode` がそのまま受け取る 6 値:\n\n```\nacceptEdits  auto  bypassPermissions  default  dontAsk  plan\n```\n\n`rai_core::claude::PermissionMode` に各 variant `#[value(name = \"...\")]` でシリアライズ文字列を固定してある。clap の snake_case 自動シリアライズに任せると `claude` が受け取らない文字列になるので、新 variant 追加時は `#[value(name = ...)]` を必ず付ける。`--permission-mode` 未指定時は `--permission-mode` フラグそのものを engine_cmd に渡さない。\n\n",
+        "page_id": "cmd-develop",
+        "level": 2
+      },
+      "vid": "62"
+    },
+    {
+      "section": {
+        "id": "cmd-develop#tmux--6",
+        "title": "tmux ラップとシェル分岐",
+        "content": "\n`build_agent_shell_command` / `wrap_with_log` は `Shell::Posix` / `Shell::Fish` で構文を分岐する:\n\n- POSIX: `set -o pipefail; (...); rc=$?`\n- Fish: `begin; ...; end` + `$pipestatus` 走査で最悪値を `$__rai_agent_status` に格納\n\nPOSIX 専用構文と fish 専用構文を **混在させない**。詳細は [shell-execution-policy](wiki://shell-execution-policy)。\n\n",
+        "page_id": "cmd-develop",
+        "level": 2
+      },
+      "vid": "63"
+    },
+    {
+      "section": {
+        "id": "cmd-develop#finalize-agent-7",
+        "title": "Finalize Agent",
+        "content": "\nagent が prompt を完了した直後、未コミット差分や未 push commit があれば `develop finalize-agent` を **同じ engine_cmd / `--permission-mode` で** 再起動する。commit/push/`gh pr create` を任せるが、commit メッセージは rai が決め打ちしない:\n\n- 各リポジトリには commitlint preset, scope, allowed types, husky hook 等があり、`Implement issue #N: ...` のような subject テンプレを rai が決めると最低 1 つは既存 ruleset に弾かれる。\n- 代わりに finalize 用 prompt は「`git commit` の commit-msg hook に弾かれたら直して再試行」「`--no-verify` は禁止」だけ伝える。\n- commit-rule のソース (`commitlint.config.*`, `.husky/commit-msg`, `CONTRIBUTING.md`) を prompt に列挙しない。hook が自動で伝える。\n\n`AgentArgs` に新フラグを追加するときは、`issue::build_finalize_command` / `pr::build_finalize_command` / `resume::build_finalize_command` と `finalize::Cmd` の 4 箇所すべてに通す。\n\n",
+        "page_id": "cmd-develop",
+        "level": 2
+      },
+      "vid": "64"
+    },
+    {
+      "section": {
+        "id": "cmd-develop#develop-resume--8",
+        "title": "`develop resume` の不変条件",
+        "content": "\nresume は **既存 worktree を破壊しない**:\n\n- `develop issue` / `develop pr` の `ensure_worktree` は `git reset --hard` + `git clean -fd` + `git pull --rebase` で worktree を初期化する。\n- 一方 `resume` は未コミット変更や rebase 中の状態を保持したまま、tmux + agent だけ立て直す。\n- issue 系は `git for-each-ref refs/heads/develop/issue-<N>-*` で worktree branch を列挙し、複数あれば fzf で選ばせる。\n- pr 系は PR の `headRefName` をそのまま branch とする。\n- worktree が見つからない場合は明示エラー (新規作成は `develop issue` の責務)。\n\n`common::find_existing_worktree` は **refresh しない** 専用ヘルパで、resume だけが使う。新規作成パス (`ensure_worktree`) と混同しないこと。\n\n",
+        "page_id": "cmd-develop",
+        "level": 2
+      },
+      "vid": "65"
+    },
+    {
+      "section": {
+        "id": "cmd-develop#-worktree--develop-issue--develop-pr-9",
+        "title": "既存 worktree の最新化 `develop issue` / `develop pr`",
+        "content": "\n`ensure_worktree` は対話プロンプトを廃止しており、`git reset --hard HEAD` + `git clean -fd` + `git pull --rebase` で **無人で** 最新化する。`gwq remove` で巻き戻すのは新規作成した worktree のみ。\n\n",
+        "page_id": "cmd-develop",
+        "level": 2
+      },
+      "vid": "66"
+    },
+    {
+      "section": {
+        "id": "cmd-develop#-10",
+        "title": "制約",
+        "content": "\n- **fork 由来 PR は非対応**。`headRepositoryOwner` が base owner と異なる PR は明示エラーで弾く。fork 対応は将来課題。\n- **tmux なし環境では `--no-tmux`** で前景実行に切替可能だが、長時間 agent はセッション復帰できなくなるので非推奨。\n\n",
+        "page_id": "cmd-develop",
+        "level": 2
+      },
+      "vid": "67"
+    },
+    {
+      "section": {
+        "id": "cmd-develop#see-also-11",
+        "title": "See Also",
+        "content": "\n- [shell-execution-policy](wiki://shell-execution-policy) — `--engine-cmd` 展開とシェル分岐の前提\n- [cmd-claude](wiki://cmd-claude) — `rai claude format` が agent 出力のパイプ後段\n- [cmd-conflicts](wiki://cmd-conflicts) — 似た構造 (worktree + agent) で動く別バッチ\n- [specs-workflow](wiki://specs-workflow) — `docs/specs/18-develop.md` / `19-develop-resume.md` / `20-ai-prompt-wording.md`\n",
+        "page_id": "cmd-develop",
+        "level": 2
+      },
+      "vid": "68"
+    },
+    {
+      "section": {
+        "id": "cmd-claude",
+        "title": "rai claude",
+        "content": "\n`claude` CLI (Claude Code) と連携するサブコマンド群。仕様: `docs/specs/04-claude-format.md` / `docs/specs/21-claude-print.md` / `docs/specs/22-claude-pair.md` / `docs/specs/23-claude-usage.md`。\n\n",
+        "page_id": "cmd-claude",
+        "level": 1
+      },
+      "vid": "69"
+    },
+    {
+      "section": {
+        "id": "cmd-claude#-2",
+        "title": "サブコマンド",
+        "content": "\n| Command | 用途 |\n|---|---|\n| `rai claude format` | `claude --output-format stream-json --verbose` の NDJSON を整形して表示する |\n| `rai claude print` | `claude --print` を session-id 単位で「初回 → 継続」自動切替で呼ぶラッパー |\n| `rai claude pair` | 2 つのプロンプトを `--print` で交互に回す pair ループ |\n| `rai claude usage` | ccs 配下の Claude プロファイル全部のレートリミット残量を表で表示 |\n\n",
+        "page_id": "cmd-claude",
+        "level": 2
+      },
+      "vid": "70"
+    },
+    {
+      "section": {
+        "id": "cmd-claude#claude-format-3",
+        "title": "`claude format`",
+        "content": "\nstdin → stdout のフィルタ。fish 関数 `ccs_print` の jq フィルタ部分を Rust に切り出して、ccs / claude の呼び出しから独立させたもの。\n\n```sh\nclaude --output-format stream-json --verbose ... | rai claude format\n```\n\n`rai develop` の `--engine-cmd` 既定パイプライン後段でも使われる ([cmd-develop](wiki://cmd-develop))。\n\n",
+        "page_id": "cmd-claude",
+        "level": 2
+      },
+      "vid": "71"
+    },
+    {
+      "section": {
+        "id": "cmd-claude#claude-print-4",
+        "title": "`claude print`",
+        "content": "\n`claude --print` (非対話 print モード) を **指定した session-id と紐付けたまま** 何度でも呼び出せるラッパー。不変条件:\n\n- 同じ session-id を渡せば、2 回目以降は同じ会話の続きとして実行される\n- 初回かどうかの判定は rai 側が行い、`--resume` / `--continue` 等の切替を自動でやる\n\n",
+        "page_id": "cmd-claude",
+        "level": 2
+      },
+      "vid": "72"
+    },
+    {
+      "section": {
+        "id": "cmd-claude#claude-pair-5",
+        "title": "`claude pair`",
+        "content": "\n`claude --print` を 2 種類のプロンプト (A / B) で交互に回し続けるループ。既存の `rai pair` ([cmd-pair-repeat](wiki://cmd-pair-repeat)) の「2 コマンドを交互に N サイクル / 時間打ち切り」ループを基盤に、claude セッションの維持と prompt 先頭への `/goal` 自動付与を上乗せする。\n\n",
+        "page_id": "cmd-claude",
+        "level": 2
+      },
+      "vid": "73"
+    },
+    {
+      "section": {
+        "id": "cmd-claude#claude-usage-6",
+        "title": "`claude usage`",
+        "content": "\n`ccs` で管理している複数の Claude Max アカウント (`c1` / `c2` / `team` 等) について、Anthropic 側のレートリミット枠 (5 時間ローリング / 7 日週次) の **残量と reset 時刻** を 1 つの表にまとめる。\n\n",
+        "page_id": "cmd-claude",
+        "level": 2
+      },
+      "vid": "74"
+    },
+    {
+      "section": {
+        "id": "cmd-claude#-permissionmode-7",
+        "title": "共通: `PermissionMode`",
+        "content": "\n`rai_core::claude::PermissionMode` を共有する ([cmd-develop](wiki://cmd-develop) 参照)。`claude --permission-mode` がそのまま受け取る 6 値:\n\n```\nacceptEdits  auto  bypassPermissions  default  dontAsk  plan\n```\n\n新 variant 追加時は `#[value(name = \"...\")]` を必ず付ける (snake_case 自動シリアライズは NG)。\n\n",
+        "page_id": "cmd-claude",
+        "level": 2
+      },
+      "vid": "75"
+    },
+    {
+      "section": {
+        "id": "cmd-claude#see-also-8",
+        "title": "See Also",
+        "content": "\n- [cmd-develop](wiki://cmd-develop) — `--engine-cmd` 経由で `claude format` を後段に置く例\n- [cmd-pair-repeat](wiki://cmd-pair-repeat) — `claude pair` の基盤になる `rai pair`\n- [rai-core](wiki://rai-core) — `claude::PermissionMode` の置き場所\n",
+        "page_id": "cmd-claude",
+        "level": 2
+      },
+      "vid": "76"
+    },
+    {
+      "section": {
+        "id": "cmd-conflicts",
+        "title": "rai conflicts",
+        "content": "\nCONFLICTING になっている自分の open PR を検出し、専用 worktree で agent CLI を呼んでコンフリクトを自動解消し、`git push --force-with-lease` まで完走させる **長時間バッチ**。fish 関数 `resolve-conflicts` (533 行) の Rust 移植。本リポジトリ最大の負債。仕様: `docs/specs/11-conflicts.md`。\n\n",
+        "page_id": "cmd-conflicts",
+        "level": 1
+      },
+      "vid": "77"
+    },
+    {
+      "section": {
+        "id": "cmd-conflicts#-2",
+        "title": "サブコマンド",
+        "content": "\n| Command | 用途 |\n|---|---|\n| `rai conflicts run` | CONFLICTING な PR を agent CLI で自動解消する |\n| `rai conflicts status` | `queue.json` の現在状態を表示する |\n| `rai conflicts reset-failed` | failed な entry を pending に戻す |\n\n",
+        "page_id": "cmd-conflicts",
+        "level": 2
+      },
+      "vid": "78"
+    },
+    {
+      "section": {
+        "id": "cmd-conflicts#-3",
+        "title": "キュー",
+        "content": "\n進行状況は `queue.json` (永続ファイル) に保存される。state は `pending` / `running` / `succeeded` / `failed` 等。`status` / `reset-failed` はこのファイルへの薄い CLI。\n\n",
+        "page_id": "cmd-conflicts",
+        "level": 2
+      },
+      "vid": "79"
+    },
+    {
+      "section": {
+        "id": "cmd-conflicts#run---4",
+        "title": "`run` の流れ おおまか",
+        "content": "\n1. `gh` で自分の open PR を取得し、CONFLICTING のみ抽出。\n2. `queue.json` を更新し、未処理 entry を 1 件ずつ:\n   1. 専用 worktree を用意 (`gwq`)\n   2. agent CLI を起動して `git rebase` / merge コンフリクトを解消させる\n   3. 解消後 `git push --force-with-lease`\n3. 結果 (`succeeded` / `failed`) を `queue.json` に書き戻す。\n\n",
+        "page_id": "cmd-conflicts",
+        "level": 2
+      },
+      "vid": "80"
+    },
+    {
+      "section": {
+        "id": "cmd-conflicts#rai-develop--5",
+        "title": "`rai develop` との関係",
+        "content": "\nworktree + agent の起動骨格は [cmd-develop](wiki://cmd-develop) と似ているが、\n\n- `develop` は対話的に 1 件起動して PR 仕上げまで持っていく\n- `conflicts` は非対話バッチで複数 PR を順に処理する\n\n役割が違うので crate は分かれている。共通化したいパターンが見えたら [rai-core](wiki://rai-core) に上げる。\n\n",
+        "page_id": "cmd-conflicts",
+        "level": 2
+      },
+      "vid": "81"
+    },
+    {
+      "section": {
+        "id": "cmd-conflicts#-6",
+        "title": "注意",
+        "content": "\n- バッチ実行中に rai 自身を更新したり、対象 PR を手で直したりすると `queue.json` が古くなる。`reset-failed` で巻き戻せるのは failed のみ。\n- `--force-with-lease` を使うので、別端末からの push が間に挟まると弾かれる (期待動作)。\n\n",
+        "page_id": "cmd-conflicts",
+        "level": 2
+      },
+      "vid": "82"
+    },
+    {
+      "section": {
+        "id": "cmd-conflicts#see-also-7",
+        "title": "See Also",
+        "content": "\n- [cmd-develop](wiki://cmd-develop) — worktree + agent 起動の参考実装\n- [shell-execution-policy](wiki://shell-execution-policy) — agent 起動のシェル経由規約\n- [specs-workflow](wiki://specs-workflow) — `docs/specs/11-conflicts.md`\n",
+        "page_id": "cmd-conflicts",
+        "level": 2
+      },
+      "vid": "83"
+    },
+    {
+      "section": {
+        "id": "cmd-issue-pr",
+        "title": "rai issue / rai pr",
+        "content": "\nGitHub Issue / PR に対する操作系サブコマンド群。仕様: `docs/specs/13-issue-inventory.md` / `docs/specs/15-issue-triage.md` / `docs/specs/08-pr-wait.md`。\n\n旧 `rai issue develop` は `rai develop issue` に統合済み ([cmd-develop](wiki://cmd-develop))。\n\n",
+        "page_id": "cmd-issue-pr",
+        "level": 1
+      },
+      "vid": "84"
+    },
+    {
+      "section": {
+        "id": "cmd-issue-pr#rai-issue-2",
+        "title": "`rai issue`",
+        "content": "\n| Command | 用途 |\n|---|---|\n| `rai issue inventory` | Issue 一覧を取得し、固定 prompt で AI engine に棚卸しさせる |\n| `rai issue triage` | triage ラベル付き Issue を 1 件ずつレビューし、close/keep を判断する |\n\n",
+        "page_id": "cmd-issue-pr",
+        "level": 2
+      },
+      "vid": "85"
+    },
+    {
+      "section": {
+        "id": "cmd-issue-pr#issue-inventory-3",
+        "title": "`issue inventory`",
+        "content": "\nGitHub Issue の棚卸し。**AI 判断結果を Issue 自体に「コメント + ラベル」として焼き込む** ことで、ユーザーが後から AI に依存せず機械的に処理 (例: `gh issue list --label triage:close-candidate | xargs gh issue close`) できる状態にする。\n\n設計上の責務分割:\n\n- Issue 取得・コメント投稿・ラベル付与は **`rai` の責務**。\n- AI engine には **GitHub アクセスを行わせない**。AI には固定 prompt + Issue JSON だけを渡す。\n- AI 判定が遅い・不安定でも、`--save-verdicts` で結果を保存しておけば後で `--from-verdicts` で AI を呼ばずに再 apply できる。\n\n主なフラグ:\n\n| Flag | 用途 |\n|---|---|\n| `--repo OWNER/REPO` | 対象リポジトリ。省略時は `gh repo view` で解決。 |\n| `--engine-cmd \"<cmd>\"` | AI engine 起動コマンド (shell 文字列)。例: `\"ccs_print c1\"`。 |\n| `--apply` | コメント・ラベルを実際に GitHub に書き込む。デフォルトは dry-run。 |\n| `--save-verdicts PATH` | engine 出力を保存。後で `--from-verdicts` 再利用可能。 |\n| `--from-verdicts PATH` | 保存済み verdict ファイルから読み込み (AI を呼ばない)。 |\n\n",
+        "page_id": "cmd-issue-pr",
+        "level": 2
+      },
+      "vid": "86"
+    },
+    {
+      "section": {
+        "id": "cmd-issue-pr#issue-triage-4",
+        "title": "`issue triage`",
+        "content": "\n`inventory --apply` で triage ラベルとコメントを焼き込んだ後の **人間レビュー段階** を担う。Issue 1 件ずつ本文 + コメントを表示して `c`(close) / `k`(keep) / `s`(skip) / `q`(quit) を入力する対話 UI。`gh issue close` とラベル削除はループ後にまとめて実行する。\n\n",
+        "page_id": "cmd-issue-pr",
+        "level": 2
+      },
+      "vid": "87"
+    },
+    {
+      "section": {
+        "id": "cmd-issue-pr#rai-pr-5",
+        "title": "`rai pr`",
+        "content": "\n| Command | 用途 |\n|---|---|\n| `rai pr wait` | PR の CI (check-runs) 完了まで polling し、完了時に通知する |\n\n",
+        "page_id": "cmd-issue-pr",
+        "level": 2
+      },
+      "vid": "88"
+    },
+    {
+      "section": {
+        "id": "cmd-issue-pr#pr-wait-6",
+        "title": "`pr wait`",
+        "content": "\n`gh pr checks --watch` のフォーマットが粗いので独自に集計表示と通知連携をする。完了時にデスクトップ通知 (macOS の `osascript display notification`) を出す。\n\n",
+        "page_id": "cmd-issue-pr",
+        "level": 2
+      },
+      "vid": "89"
+    },
+    {
+      "section": {
+        "id": "cmd-issue-pr#see-also-7",
+        "title": "See Also",
+        "content": "\n- [cmd-develop](wiki://cmd-develop) — Issue / PR を起点に worktree + agent を立てる側\n- [cmd-git-gh-gwq-dev](wiki://cmd-git-gh-gwq-dev) — `gh` まわりの他のヘルパ (`rai gh rate-limit`)\n- [specs-workflow](wiki://specs-workflow) — 関連仕様の索引\n",
+        "page_id": "cmd-issue-pr",
+        "level": 2
+      },
+      "vid": "90"
+    },
+    {
+      "section": {
+        "id": "cmd-git-gh-gwq-dev",
+        "title": "rai git / gh / gwq / dev",
+        "content": "\nリポジトリ操作系の小さなサブコマンド群。\n\n",
+        "page_id": "cmd-git-gh-gwq-dev",
+        "level": 1
+      },
+      "vid": "91"
+    },
+    {
+      "section": {
+        "id": "cmd-git-gh-gwq-dev#rai-git-2",
+        "title": "`rai git`",
+        "content": "\n仕様: `docs/specs/06-git-autopull.md` / `docs/specs/07-git-track-mine.md`。\n\n| Command | 用途 |\n|---|---|\n| `rai git autopull` | upstream を一定間隔で fetch し、HEAD と乖離していたら **fast-forward だけで** pull する |\n| `rai git track-mine` | 自分が author の最近のブランチを一覧し、選択して checkout (tracking branch を生やす) |\n\n",
+        "page_id": "cmd-git-gh-gwq-dev",
+        "level": 2
+      },
+      "vid": "92"
+    },
+    {
+      "section": {
+        "id": "cmd-git-gh-gwq-dev#git-autopull-3",
+        "title": "`git autopull`",
+        "content": "\n長時間張り付いている開発ブランチで「気付かないうちに upstream が進んでた」を潰すための間欠 fetcher。fast-forward 不可なら何もしない (rebase / merge は走らない)。\n\n",
+        "page_id": "cmd-git-gh-gwq-dev",
+        "level": 2
+      },
+      "vid": "93"
+    },
+    {
+      "section": {
+        "id": "cmd-git-gh-gwq-dev#git-track-mine-4",
+        "title": "`git track-mine`",
+        "content": "\nレビュー対応 / rebase の起点として、いちいち `git fetch && git checkout -t origin/...` を打たなくて済むようにする。fzf で 1 つ選んで checkout する。\n\n",
+        "page_id": "cmd-git-gh-gwq-dev",
+        "level": 2
+      },
+      "vid": "94"
+    },
+    {
+      "section": {
+        "id": "cmd-git-gh-gwq-dev#rai-gh-5",
+        "title": "`rai gh`",
+        "content": "\n仕様: `docs/specs/03-gh-rate-limit.md`。\n\n| Command | 用途 |\n|---|---|\n| `rai gh rate-limit` | GitHub API のレートリミット残量と reset までの残り時間を人間に読める形式で表示 |\n\nfish 関数 `gh_rate_limit` の置き換え。\n\n",
+        "page_id": "cmd-git-gh-gwq-dev",
+        "level": 2
+      },
+      "vid": "95"
+    },
+    {
+      "section": {
+        "id": "cmd-git-gh-gwq-dev#rai-gwq-6",
+        "title": "`rai gwq`",
+        "content": "\n仕様: `docs/specs/10-gwq-clean.md`。\n\n| Command | 用途 |\n|---|---|\n| `rai gwq clean` | `gwq` で増えた worktree のうち「もう要らないもの」を fzf で選んでまとめて掃除する |\n\n「もう要らない」の判定基準: default branch にマージ済み / リモートが消えた / 古い。fish 関数 `gwq-clean` (248 行) の Rust 移植。\n\n",
+        "page_id": "cmd-git-gh-gwq-dev",
+        "level": 2
+      },
+      "vid": "96"
+    },
+    {
+      "section": {
+        "id": "cmd-git-gh-gwq-dev#rai-dev-7",
+        "title": "`rai dev`",
+        "content": "\n仕様: `docs/specs/05-dev.md`。\n\n`ghq` + `gwq` で管理しているリポジトリ / worktree から fzf で 1 つを選び、選択結果のパスを stdout に出す。\n\n**注意**: bin から親シェルの cwd は変えられないので、選択結果を吐くだけにとどめ、`cd` / `tmux rename` はシェル側 wrapper の責務。fish なら例えば:\n\n```fish\nfunction dev\n    set -l path (rai dev) or return\n    cd $path\nend\n```\n\n",
+        "page_id": "cmd-git-gh-gwq-dev",
+        "level": 2
+      },
+      "vid": "97"
+    },
+    {
+      "section": {
+        "id": "cmd-git-gh-gwq-dev#see-also-8",
+        "title": "See Also",
+        "content": "\n- [cmd-issue-pr](wiki://cmd-issue-pr) — `gh` を使う他の系列\n- [cmd-develop](wiki://cmd-develop) — `gwq` を使う側の最大ユーザー\n- [shell-execution-policy](wiki://shell-execution-policy) — `gh` / `git` / `gwq` 呼び出しの規約\n",
+        "page_id": "cmd-git-gh-gwq-dev",
+        "level": 2
+      },
+      "vid": "98"
+    },
+    {
+      "section": {
+        "id": "cmd-pair-repeat",
+        "title": "rai pair / rai repeat",
+        "content": "\n長時間ループ系の汎用サブコマンド。\n\n",
+        "page_id": "cmd-pair-repeat",
+        "level": 1
+      },
+      "vid": "99"
+    },
+    {
+      "section": {
+        "id": "cmd-pair-repeat#rai-pair-2",
+        "title": "`rai pair`",
+        "content": "\n仕様: `docs/specs/01-pair.md`。\n\n2 つのコマンド (A, B) を 1 サイクルとして交互に回し続けるループ + 下部固定ステータスバー。`rai` バイナリの **共通基盤** (端末復元 / signal 処理 / panic フック / 子プロセス実行ヘルパ / ログフォーマット) もここで確立され、後続サブコマンドから再利用される。\n\n主なフラグ:\n\n| Flag | 用途 |\n|---|---|\n| `--command-a \"<CMD>\"` | A 側コマンド (`$SHELL -c \"<CMD>\"`) |\n| `--command-b \"<CMD>\"` | B 側コマンド |\n| `--max-cycles N` | 最大サイクル数 (A→B で 1 サイクル)。デフォルト 10 |\n| `--max-hours N` | 累積最大実行時間 (時間)。0 で無制限。デフォルト 48 |\n| `--no-status-bar` | 下部固定ステータスバーを無効化 (現行 fish 版互換モード) |\n| `--shell PATH` | 子コマンド実行用シェル。未指定時は `$SHELL` → `/bin/sh` |\n\nタイムアウトは `timeout(1)` がある環境では使う (`proc::find_timeout_bin`)。exit 124 を予約。signal-hook で SIGINT を握り、ステータスバーを片付けてから抜ける。\n\n",
+        "page_id": "cmd-pair-repeat",
+        "level": 2
+      },
+      "vid": "100"
+    },
+    {
+      "section": {
+        "id": "cmd-pair-repeat#rai-repeat-3",
+        "title": "`rai repeat`",
+        "content": "\n仕様: `docs/specs/17-repeat.md`。\n\n任意のシェルコマンドを「回数」または「経過時間」で制限しながらループ実行する小さなランナー。`while true; sleep` ワンライナーや `watch` の使い回しを、回数上限・時間上限・失敗時の早期停止という最低限の品質保証付きで再利用しやすくしたもの。\n\n主なフラグ:\n\n| Flag | 用途 |\n|---|---|\n| `-n N` / `--count N` | 最大繰り返し回数 (≥1) |\n| `-d D` / `--duration D` | 最大経過時間。例: `30s`, `5m`, `1h30m`, `500ms` |\n| `-i D` / `--interval D` | 各イテレーション間の sleep |\n| `<COMMAND>` | 実行コマンド (位置引数)。`$SHELL -c` にそのまま渡される |\n\n`--count` と `--duration` は **OR**。少なくとも一方が必須 (`clap::ArgGroup` で強制)。\n\nコマンド本体は `$SHELL -c <CMD>` 経由なので fish function / zsh alias もそのまま動く ([shell-execution-policy](wiki://shell-execution-policy))。\n\n",
+        "page_id": "cmd-pair-repeat",
+        "level": 2
+      },
+      "vid": "101"
+    },
+    {
+      "section": {
+        "id": "cmd-pair-repeat#-4",
+        "title": "違い",
+        "content": "\n- **`pair`**: 2 種類の処理を交互に。`claude pair` の基盤 ([cmd-claude](wiki://cmd-claude))。\n- **`repeat`**: 1 種類の処理を繰り返し。watch 代わりの軽量版。\n\n",
+        "page_id": "cmd-pair-repeat",
+        "level": 2
+      },
+      "vid": "102"
+    },
+    {
+      "section": {
+        "id": "cmd-pair-repeat#see-also-5",
+        "title": "See Also",
+        "content": "\n- [cmd-claude](wiki://cmd-claude) — `claude pair` の基盤として `rai pair` を使う\n- [rai-core](wiki://rai-core) — `term`, `signals`, `proc`, `shell` モジュール\n- [shell-execution-policy](wiki://shell-execution-policy) — `--command-*` / `<COMMAND>` がそのまま `$SHELL -c` に渡る前提\n",
+        "page_id": "cmd-pair-repeat",
+        "level": 2
+      },
+      "vid": "103"
+    },
+    {
+      "section": {
+        "id": "cmd-misc",
+        "title": "rai date / doctor / hello / completion",
+        "content": "\n小物サブコマンド。\n\n",
+        "page_id": "cmd-misc",
+        "level": 1
+      },
+      "vid": "104"
+    },
+    {
+      "section": {
+        "id": "cmd-misc#rai-date-2",
+        "title": "`rai date`",
+        "content": "\n仕様: `docs/specs/02-date.md`。\n\nfish 関数 `mydate` 相当の「`date +%Y%m%d` のごく薄いラッパ」。シェルスクリプトや tmux ペインタイトルなど、日付文字列だけ欲しい場面で使う 1 行ユーティリティ。\n\n",
+        "page_id": "cmd-misc",
+        "level": 2
+      },
+      "vid": "105"
+    },
+    {
+      "section": {
+        "id": "cmd-misc#rai-doctor-3",
+        "title": "`rai doctor`",
+        "content": "\n仕様: `docs/specs/14-doctor.md`。\n\n`rai` 全体が依存している外部 CLI が `PATH` にあるか診断する。新しい環境で `rai` を入れたユーザーが、何が足りないか即分かる状態を作る。\n\n現在の `REQUIRED_TOOLS` (`crates/cmd/rai-cmd-doctor/src/lib.rs`):\n\n```\ngit  gh  gwq  tmux  fzf  claude  ccs  tee\n```\n\n不足があれば exit code 非ゼロ + 不足ツール一覧を出す。\n\n**新規依存を増やしたら忘れず追加する**。`rai-cmd-*` のどこかで新しい外部 CLI を `shell::user_shell_argv` で呼ぶようになったら、`REQUIRED_TOOLS` にも 1 行足す。詳細は [adding-subcommand](wiki://adding-subcommand)。\n\n",
+        "page_id": "cmd-misc",
+        "level": 2
+      },
+      "vid": "106"
+    },
+    {
+      "section": {
+        "id": "cmd-misc#rai-hello-4",
+        "title": "`rai hello`",
+        "content": "\n新規サブコマンド追加のテンプレート ([adding-subcommand](wiki://adding-subcommand))。動作としては挨拶を出すだけ。`crates/cmd/rai-cmd-hello/` を `cp -r` して新コマンドの雛形にする。\n\n",
+        "page_id": "cmd-misc",
+        "level": 2
+      },
+      "vid": "107"
+    },
+    {
+      "section": {
+        "id": "cmd-misc#rai-completion-5",
+        "title": "`rai completion`",
+        "content": "\n仕様: `docs/specs/12-completion.md`。\n\n`rai` のサブコマンドツリーに対するシェル補完スクリプトを stdout に出力する。bash / zsh / fish / powershell / elvish 対応。\n\n```sh\nrai completion fish | source                            # 即時適用\nrai completion --source fish >> ~/.config/fish/config.fish  # 永続化 (推奨)\n```\n\n`--source` は **バイナリパスから補完を再ロードする小さなスニペット** を吐く。これを rc に入れておくと、`rai` を更新しても新しいシェルでは更新後バイナリの補完が自動適用される。\n\n",
+        "page_id": "cmd-misc",
+        "level": 2
+      },
+      "vid": "108"
+    },
+    {
+      "section": {
+        "id": "cmd-misc#-6",
+        "title": "実装上の例外",
+        "content": "\n`rai-cmd-completion` だけは `Run::run` 経由ではなく、`crates/rai/src/main.rs` の match arm が `Cmd::Completion(c) => c.print(&mut Cli::command())` を直接呼ぶ。理由はトップレベルの `clap::Command` ツリーが必要だから。詳細は [architecture](wiki://architecture)。\n\n",
+        "page_id": "cmd-misc",
+        "level": 2
+      },
+      "vid": "109"
+    },
+    {
+      "section": {
+        "id": "cmd-misc#see-also-7",
+        "title": "See Also",
+        "content": "\n- [adding-subcommand](wiki://adding-subcommand) — `hello` をテンプレートに新コマンドを追加\n- [architecture](wiki://architecture) — `completion` だけ dispatch 経路が違う理由\n- [getting-started](wiki://getting-started) — `completion` の永続化手順\n",
+        "page_id": "cmd-misc",
+        "level": 2
+      },
+      "vid": "110"
+    },
+    {
+      "section": {
+        "id": "specs-workflow",
+        "title": "Specs Workflow",
+        "content": "\n`rai` は **Spec-First** 開発を強制する。実装より先に `docs/specs/NN-<name>.md` を書く。\n\n",
+        "page_id": "specs-workflow",
+        "level": 1
+      },
+      "vid": "111"
+    },
+    {
+      "section": {
+        "id": "specs-workflow#-2",
+        "title": "ルール",
+        "content": "\n- 実装前に **必ず** `docs/specs/` に仕様を書く。\n- Spec は **何を作るか** を書く: 目的 / ユーザー価値 / 成果物 / 受入条件。\n- Spec は **どう作るか** を書かない: 実装計画 / 内部設計 / ライブラリ選定。それらは code, PR description, 設計メモに置く。\n- 仕様なしの実装は禁止。途中で仕様が変わったら **コードより先に spec を更新する**。\n\n(出典: workspace ルート `CLAUDE.md` / `AGENTS.md`)\n\n",
+        "page_id": "specs-workflow",
+        "level": 2
+      },
+      "vid": "112"
+    },
+    {
+      "section": {
+        "id": "specs-workflow#-3",
+        "title": "ファイル命名",
+        "content": "\n```\ndocs/specs/NN-<name>.md\n```\n\n`NN` はゼロパディングなしの 2 桁連番 (現状 01〜23、09 は廃止統合済)。\n\n",
+        "page_id": "specs-workflow",
+        "level": 2
+      },
+      "vid": "113"
+    },
+    {
+      "section": {
+        "id": "specs-workflow#-4",
+        "title": "仕様カタログ",
+        "content": "\n| No | Title | Subcommand | ページ |\n|----|---|---|---|\n| 01 | `rai pair` | `rai pair` | [cmd-pair-repeat](wiki://cmd-pair-repeat) |\n| 02 | `rai date` | `rai date` | [cmd-misc](wiki://cmd-misc) |\n| 03 | `rai gh rate-limit` | `rai gh rate-limit` | [cmd-git-gh-gwq-dev](wiki://cmd-git-gh-gwq-dev) |\n| 04 | `rai claude format` | `rai claude format` | [cmd-claude](wiki://cmd-claude) |\n| 05 | `rai dev` | `rai dev` | [cmd-git-gh-gwq-dev](wiki://cmd-git-gh-gwq-dev) |\n| 06 | `rai git autopull` | `rai git autopull` | [cmd-git-gh-gwq-dev](wiki://cmd-git-gh-gwq-dev) |\n| 07 | `rai git track-mine` | `rai git track-mine` | [cmd-git-gh-gwq-dev](wiki://cmd-git-gh-gwq-dev) |\n| 08 | `rai pr wait` | `rai pr wait` | [cmd-issue-pr](wiki://cmd-issue-pr) |\n| 10 | `rai gwq clean` | `rai gwq clean` | [cmd-git-gh-gwq-dev](wiki://cmd-git-gh-gwq-dev) |\n| 11 | `rai conflicts` | `rai conflicts` | [cmd-conflicts](wiki://cmd-conflicts) |\n| 12 | `rai completion` | `rai completion` | [cmd-misc](wiki://cmd-misc) |\n| 13 | `rai issue inventory` | `rai issue inventory` | [cmd-issue-pr](wiki://cmd-issue-pr) |\n| 14 | `rai doctor` | `rai doctor` | [cmd-misc](wiki://cmd-misc) |\n| 15 | `rai issue triage` | `rai issue triage` | [cmd-issue-pr](wiki://cmd-issue-pr) |\n| 16 | 外部プロセス起動ポリシー | (横断ルール) | [shell-execution-policy](wiki://shell-execution-policy) |\n| 17 | `rai repeat` | `rai repeat` | [cmd-pair-repeat](wiki://cmd-pair-repeat) |\n| 18 | `rai develop` | `rai develop {issue,pr}` | [cmd-develop](wiki://cmd-develop) |\n| 19 | `rai develop resume` | `rai develop resume` | [cmd-develop](wiki://cmd-develop) |\n| 20 | AI prompt wording | (横断ルール) | [cmd-develop](wiki://cmd-develop) |\n| 21 | `rai claude print` | `rai claude print` | [cmd-claude](wiki://cmd-claude) |\n| 22 | `rai claude pair` | `rai claude pair` | [cmd-claude](wiki://cmd-claude) |\n| 23 | `rai claude usage` | `rai claude usage` | [cmd-claude](wiki://cmd-claude) |\n\n",
+        "page_id": "specs-workflow",
+        "level": 2
+      },
+      "vid": "114"
+    },
+    {
+      "section": {
+        "id": "specs-workflow#-09--5",
+        "title": "番号 09 が欠番",
+        "content": "\n旧 `09-issue-develop.md` は `18-develop.md` に統合された。`rai issue develop` も `rai develop issue` に再編済み。古い番号は復活させない。\n\n",
+        "page_id": "specs-workflow",
+        "level": 2
+      },
+      "vid": "115"
+    },
+    {
+      "section": {
+        "id": "specs-workflow#spec--6",
+        "title": "Spec を書く流れ",
+        "content": "\n1. 新サブコマンド (または横断ルール) のアイデアがある。\n2. 次の連番 `NN` を取り、`docs/specs/NN-<name>.md` を作る。\n3. テンプレート構成:\n   - `# NN — <タイトル>`\n   - Source issue リンク (任意)\n   - `## 目的`\n   - `## 機能要件` / `## 受入条件`\n4. 仕様レビューが済んでから [adding-subcommand](wiki://adding-subcommand) に進む。\n\n",
+        "page_id": "specs-workflow",
+        "level": 2
+      },
+      "vid": "116"
+    },
+    {
+      "section": {
+        "id": "specs-workflow#-7",
+        "title": "仕様変更時",
+        "content": "\n> 仕様が途中で変わったら、コードより先に spec を更新する。\n\nこれは厳格に守る。spec とコードが乖離すると 23 本ある仕様書全部の信用が落ちる。\n\n",
+        "page_id": "specs-workflow",
+        "level": 2
+      },
+      "vid": "117"
+    },
+    {
+      "section": {
+        "id": "specs-workflow#see-also-8",
+        "title": "See Also",
+        "content": "\n- [overview](wiki://overview) / [architecture](wiki://architecture) — 仕様書群が何を支えているか\n- [adding-subcommand](wiki://adding-subcommand) — spec を書いた後の実装手順\n",
+        "page_id": "specs-workflow",
+        "level": 2
+      },
+      "vid": "118"
+    }
+  ]
+}

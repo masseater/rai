@@ -1,0 +1,118 @@
+{
+  "version": "1",
+  "page_states": {
+    "overview": {
+      "page_hash": "8d846a8cdfaef4de7d0fffe58dfc8d9d",
+      "source_hashes": {
+        "README.md": "1db4938839c45c22bc25cc79afdc0864",
+        "AGENTS.md": "7aa2b1e47647caa8511b9860c8d53dbc",
+        "Cargo.toml": "b82f36f1cf8f0d69dd9147c1cea22f55"
+      }
+    },
+    "getting-started": {
+      "page_hash": "2c890986d2b9a99fff1c70d64544e924",
+      "source_hashes": {
+        "README.md": "1db4938839c45c22bc25cc79afdc0864",
+        "Cargo.toml": "b82f36f1cf8f0d69dd9147c1cea22f55",
+        "dist-workspace.toml": "05e60a73aa4601ce73525dd2080d5d95",
+        ".github/workflows/ci.yml": "a8efce37fc1a3ed9a18337fa17d87880",
+        ".github/workflows/release.yml": "62a1def8804949e020adbc01be234074"
+      }
+    },
+    "architecture": {
+      "page_hash": "b0bf265a64ae9e9c365f3c02e304465f",
+      "source_hashes": {
+        "Cargo.toml": "b82f36f1cf8f0d69dd9147c1cea22f55",
+        "crates/rai/src/main.rs": "c05a91e99f21bd924901604f0a9c50ed",
+        "crates/rai/Cargo.toml": "229553e1076c9a78deb6397d49bb4a4b",
+        "crates/cmd/AGENTS.md": "843f7de44d67f462d34023f057f374b2"
+      }
+    },
+    "rai-core": {
+      "page_hash": "7e8218e259d6b87a7da72a6889cdd457",
+      "source_hashes": {}
+    },
+    "shell-execution-policy": {
+      "page_hash": "135aeed1d4f221100ee84c0a7cd7f392",
+      "source_hashes": {
+        "crates/rai-core/src/shell.rs": "083a734b25547fc59a1269bc86833ef4",
+        "crates/rai-core/tests/shell_smoke.rs": "783b894d22c3b18dbd4fe80faa64930c",
+        "docs/specs/16-shell-execution-policy.md": "f1cda70d6c459ba8f09e43399382d1f8",
+        "AGENTS.md": "7aa2b1e47647caa8511b9860c8d53dbc"
+      }
+    },
+    "adding-subcommand": {
+      "page_hash": "274ec6ef9ac67c4d70773894b3c0262d",
+      "source_hashes": {
+        "crates/cmd/AGENTS.md": "843f7de44d67f462d34023f057f374b2",
+        "crates/rai/src/main.rs": "c05a91e99f21bd924901604f0a9c50ed",
+        "crates/rai/Cargo.toml": "229553e1076c9a78deb6397d49bb4a4b",
+        "Cargo.toml": "b82f36f1cf8f0d69dd9147c1cea22f55"
+      }
+    },
+    "cmd-develop": {
+      "page_hash": "e4756f3764068f80924cbd6466a33b60",
+      "source_hashes": {
+        "docs/specs/18-develop.md": "8e98b062780dc7c6dfcd2095f6968945",
+        "docs/specs/19-develop-resume.md": "528af49816d3aa337aa1c6a143267b07",
+        "docs/specs/20-ai-prompt-wording.md": "56e30913c35b51cca2acc98ea1bc2635"
+      }
+    },
+    "cmd-claude": {
+      "page_hash": "66b10b4f32d1eb0629a77b3944960c5f",
+      "source_hashes": {
+        "crates/rai-core/src/claude.rs": "b337adb3efce90c743fb911377b5fd5c",
+        "docs/specs/04-claude-format.md": "fb64a8249c506af5e1eef6d4c47bde7a",
+        "docs/specs/21-claude-print.md": "e8d519dd1a4a80d3251ef1f36e679a05",
+        "docs/specs/22-claude-pair.md": "db897d3fb45ccb3819a71692187cfef3",
+        "docs/specs/23-claude-usage.md": "6db5965070bc9f1a15b6a809f76da163"
+      }
+    },
+    "cmd-conflicts": {
+      "page_hash": "22f1af8d1ab91d84d8007e6648d79b4b",
+      "source_hashes": {
+        "docs/specs/11-conflicts.md": "1b91a99ff053d55a88f5af623bdc7855"
+      }
+    },
+    "cmd-issue-pr": {
+      "page_hash": "1ebd3ca9e1b0962327018736f483d958",
+      "source_hashes": {
+        "docs/specs/13-issue-inventory.md": "24bb481d971236e30fa497b5b703267a",
+        "docs/specs/15-issue-triage.md": "59a50032ba1be589b526f57531ec5648",
+        "docs/specs/08-pr-wait.md": "dbe41d5a1fd27ffa1b543eb3665cd511"
+      }
+    },
+    "cmd-git-gh-gwq-dev": {
+      "page_hash": "4d0b59d62419703aabc451c3b5236a5f",
+      "source_hashes": {
+        "docs/specs/03-gh-rate-limit.md": "c272ac11d393ff6c4e5589b11eaf50a5",
+        "docs/specs/05-dev.md": "bb94d1fa376ae74557ea7b7d9958bb37",
+        "docs/specs/06-git-autopull.md": "e3b2e269466d36a09badfbb4487d65c7",
+        "docs/specs/07-git-track-mine.md": "26a5e11a3b55fa20fa9dc0b1473cc785",
+        "docs/specs/10-gwq-clean.md": "b0b1ccc01779cc121c9d507ba164e5af"
+      }
+    },
+    "cmd-pair-repeat": {
+      "page_hash": "e7456a74489d932ee5fd10c0f65b1a35",
+      "source_hashes": {
+        "docs/specs/01-pair.md": "7678845aeff1378244d621897135a4d7",
+        "docs/specs/17-repeat.md": "755db1ea70ab8ff9a975b5155250c647"
+      }
+    },
+    "cmd-misc": {
+      "page_hash": "013ced06cad322384c6fccd0fc16192e",
+      "source_hashes": {
+        "docs/specs/02-date.md": "ed54bb49435c756a11050746882ab596",
+        "docs/specs/12-completion.md": "6000941bafa7ad59de5f2008c727fecf",
+        "docs/specs/14-doctor.md": "4effd83a7fb0e8b143ffacd1a9189129"
+      }
+    },
+    "specs-workflow": {
+      "page_hash": "80636a9c0bcb7f903503494b36f9e241",
+      "source_hashes": {
+        "AGENTS.md": "7aa2b1e47647caa8511b9860c8d53dbc",
+        "CLAUDE.md": "7aa2b1e47647caa8511b9860c8d53dbc"
+      }
+    }
+  }
+}
