@@ -37,6 +37,8 @@ enum Cmd {
     Gh(rai_cmd_gh::Cmd),
     /// Claude Code (`claude` CLI) と連携するサブコマンド群。
     Claude(rai_cmd_claude::Cmd),
+    /// `ccs` CLI と連携するサブコマンド群 (Claude プロファイル横断のレートリミット表示等)。
+    Ccs(rai_cmd_ccs::Cmd),
     /// ghq + gwq + fzf でリポジトリ/worktree を選ぶ。
     Dev(rai_cmd_dev::Cmd),
     /// 開発支援用の git サブコマンド群 (autopull, track-mine)。
@@ -67,6 +69,7 @@ impl Run for Cmd {
             Cmd::Date(c) => c.run(ctx),
             Cmd::Gh(c) => c.run(ctx),
             Cmd::Claude(c) => c.run(ctx),
+            Cmd::Ccs(c) => c.run(ctx),
             Cmd::Dev(c) => c.run(ctx),
             Cmd::Git(c) => c.run(ctx),
             Cmd::Pr(c) => c.run(ctx),

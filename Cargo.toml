@@ -32,6 +32,7 @@ rai-cmd-conflicts = { path = "crates/cmd/rai-cmd-conflicts", version = "0.1.0" }
 rai-cmd-completion = { path = "crates/cmd/rai-cmd-completion", version = "0.1.0" }
 rai-cmd-doctor = { path = "crates/cmd/rai-cmd-doctor", version = "0.1.0" }
 rai-cmd-repeat = { path = "crates/cmd/rai-cmd-repeat", version = "0.1.0" }
+rai-cmd-ccs = { path = "crates/cmd/rai-cmd-ccs", version = "0.1.0" }
 
 # 外部crate（共通バージョン）
 clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
@@ -50,6 +51,7 @@ libc = "0.2"
 fs2 = "0.4"
 uuid = { version = "1", features = ["v4"] }
 ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+sha2 = "0.10"
 
 [profile.release]
 lto = "thin"

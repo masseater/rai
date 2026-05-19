@@ -1,6 +1,6 @@
 # `rai claude`
 
-`claude` CLI (Claude Code) と連携するサブコマンド群。仕様: `docs/specs/04-claude-format.md` / `docs/specs/21-claude-print.md` / `docs/specs/22-claude-pair.md` / `docs/specs/23-claude-usage.md`。
+`claude` CLI (Claude Code) と連携するサブコマンド群。仕様: `docs/specs/04-claude-format.md` / `docs/specs/21-claude-print.md` / `docs/specs/22-claude-pair.md`。
 
 ## サブコマンド
 
@@ -9,7 +9,8 @@
 | `rai claude format` | `claude --output-format stream-json --verbose` の NDJSON を整形して表示する |
 | `rai claude print` | `claude --print` を session-id 単位で「初回 → 継続」自動切替で呼ぶラッパー |
 | `rai claude pair` | 2 つのプロンプトを `--print` で交互に回す pair ループ |
-| `rai claude usage` | ccs 配下の Claude プロファイル全部のレートリミット残量を表で表示 |
+
+ccs プロファイル横断のレートリミット表示は `rai ccs usage` に分離されている ([cmd-ccs](wiki://cmd-ccs))。
 
 ## `claude format`
 
@@ -32,10 +33,6 @@ claude --output-format stream-json --verbose ... | rai claude format
 
 `claude --print` を 2 種類のプロンプト (A / B) で交互に回し続けるループ。既存の `rai pair` ([cmd-pair-repeat](wiki://cmd-pair-repeat)) の「2 コマンドを交互に N サイクル / 時間打ち切り」ループを基盤に、claude セッションの維持と prompt 先頭への `/goal` 自動付与を上乗せする。
 
-## `claude usage`
-
-`ccs` で管理している複数の Claude Max アカウント (`c1` / `c2` / `team` 等) について、Anthropic 側のレートリミット枠 (5 時間ローリング / 7 日週次) の **残量と reset 時刻** を 1 つの表にまとめる。
-
 ## 共通: `PermissionMode`
 
 `rai_core::claude::PermissionMode` を共有する ([cmd-develop](wiki://cmd-develop) 参照)。`claude --permission-mode` がそのまま受け取る 6 値:
@@ -48,6 +45,7 @@ acceptEdits  auto  bypassPermissions  default  dontAsk  plan
 
 ## See Also
 
+- [cmd-ccs](wiki://cmd-ccs) — ccs プロファイル横断のレートリミット表示 (旧 `claude usage`)
 - [cmd-develop](wiki://cmd-develop) — `--engine-cmd` 経由で `claude format` を後段に置く例
 - [cmd-pair-repeat](wiki://cmd-pair-repeat) — `claude pair` の基盤になる `rai pair`
 - [rai-core](wiki://rai-core) — `claude::PermissionMode` の置き場所
