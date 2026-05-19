@@ -1,0 +1,651 @@
+[
+  {
+    "timestamp": "0",
+    "operation": "pages add",
+    "actor": "agent:claude",
+    "summary": "Added page: Overview",
+    "details": {},
+    "affected_pages": [
+      "overview"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages add",
+    "actor": "agent:claude",
+    "summary": "Added page: Getting Started",
+    "details": {},
+    "affected_pages": [
+      "getting-started"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages add",
+    "actor": "agent:claude",
+    "summary": "Added page: Architecture",
+    "details": {},
+    "affected_pages": [
+      "architecture"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages add",
+    "actor": "agent:claude",
+    "summary": "Added page: rai-core",
+    "details": {},
+    "affected_pages": [
+      "rai-core"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages add",
+    "actor": "agent:claude",
+    "summary": "Added page: Shell Execution Policy",
+    "details": {},
+    "affected_pages": [
+      "shell-execution-policy"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages add",
+    "actor": "agent:claude",
+    "summary": "Added page: Adding a New Subcommand",
+    "details": {},
+    "affected_pages": [
+      "adding-subcommand"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages add",
+    "actor": "agent:claude",
+    "summary": "Added page: rai develop",
+    "details": {},
+    "affected_pages": [
+      "cmd-develop"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages add",
+    "actor": "agent:claude",
+    "summary": "Added page: rai claude",
+    "details": {},
+    "affected_pages": [
+      "cmd-claude"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages add",
+    "actor": "agent:claude",
+    "summary": "Added page: rai conflicts",
+    "details": {},
+    "affected_pages": [
+      "cmd-conflicts"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages add",
+    "actor": "agent:claude",
+    "summary": "Added page: rai issue / rai pr",
+    "details": {},
+    "affected_pages": [
+      "cmd-issue-pr"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages add",
+    "actor": "agent:claude",
+    "summary": "Added page: rai git / gh / gwq / dev",
+    "details": {},
+    "affected_pages": [
+      "cmd-git-gh-gwq-dev"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages add",
+    "actor": "agent:claude",
+    "summary": "Added page: rai pair / rai repeat",
+    "details": {},
+    "affected_pages": [
+      "cmd-pair-repeat"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages add",
+    "actor": "agent:claude",
+    "summary": "Added page: rai date / doctor / hello / completion",
+    "details": {},
+    "affected_pages": [
+      "cmd-misc"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages add",
+    "actor": "agent:claude",
+    "summary": "Added page: Specs Workflow",
+    "details": {},
+    "affected_pages": [
+      "specs-workflow"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "lint",
+    "actor": "indexion",
+    "summary": "11 issues found across 14 pages",
+    "details": {},
+    "affected_pages": [
+      "overview",
+      "shell-execution-policy",
+      "getting-started",
+      "architecture",
+      "adding-subcommand"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "index build",
+    "actor": "indexion",
+    "summary": "Built index: 3 categories, 0 hub pages",
+    "details": {},
+    "affected_pages": []
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: cmd-claude",
+    "details": {},
+    "affected_pages": [
+      "cmd-claude"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: overview",
+    "details": {},
+    "affected_pages": [
+      "overview"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: rai-core",
+    "details": {},
+    "affected_pages": [
+      "rai-core"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: specs-workflow",
+    "details": {},
+    "affected_pages": [
+      "specs-workflow"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: adding-subcommand",
+    "details": {},
+    "affected_pages": [
+      "adding-subcommand"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: cmd-issue-pr",
+    "details": {},
+    "affected_pages": [
+      "cmd-issue-pr"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: getting-started",
+    "details": {},
+    "affected_pages": [
+      "getting-started"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: cmd-pair-repeat",
+    "details": {},
+    "affected_pages": [
+      "cmd-pair-repeat"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: cmd-git-gh-gwq-dev",
+    "details": {},
+    "affected_pages": [
+      "cmd-git-gh-gwq-dev"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: architecture",
+    "details": {},
+    "affected_pages": [
+      "architecture"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: shell-execution-policy",
+    "details": {},
+    "affected_pages": [
+      "shell-execution-policy"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: cmd-misc",
+    "details": {},
+    "affected_pages": [
+      "cmd-misc"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: cmd-develop",
+    "details": {},
+    "affected_pages": [
+      "cmd-develop"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: cmd-conflicts",
+    "details": {},
+    "affected_pages": [
+      "cmd-conflicts"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "lint",
+    "actor": "indexion",
+    "summary": "13 issues found across 14 pages",
+    "details": {},
+    "affected_pages": [
+      "overview",
+      "getting-started",
+      "rai-core",
+      "adding-subcommand",
+      "cmd-develop",
+      "cmd-misc"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "index build",
+    "actor": "indexion",
+    "summary": "Built index: 3 categories, 10 hub pages + vectors",
+    "details": {},
+    "affected_pages": []
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: cmd-claude",
+    "details": {},
+    "affected_pages": [
+      "cmd-claude"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: overview",
+    "details": {},
+    "affected_pages": [
+      "overview"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: rai-core",
+    "details": {},
+    "affected_pages": [
+      "rai-core"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: specs-workflow",
+    "details": {},
+    "affected_pages": [
+      "specs-workflow"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: adding-subcommand",
+    "details": {},
+    "affected_pages": [
+      "adding-subcommand"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: cmd-issue-pr",
+    "details": {},
+    "affected_pages": [
+      "cmd-issue-pr"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: getting-started",
+    "details": {},
+    "affected_pages": [
+      "getting-started"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: cmd-pair-repeat",
+    "details": {},
+    "affected_pages": [
+      "cmd-pair-repeat"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: cmd-git-gh-gwq-dev",
+    "details": {},
+    "affected_pages": [
+      "cmd-git-gh-gwq-dev"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: architecture",
+    "details": {},
+    "affected_pages": [
+      "architecture"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: shell-execution-policy",
+    "details": {},
+    "affected_pages": [
+      "shell-execution-policy"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: cmd-misc",
+    "details": {},
+    "affected_pages": [
+      "cmd-misc"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: cmd-develop",
+    "details": {},
+    "affected_pages": [
+      "cmd-develop"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: cmd-conflicts",
+    "details": {},
+    "affected_pages": [
+      "cmd-conflicts"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "lint",
+    "actor": "indexion",
+    "summary": "1 issues found across 14 pages",
+    "details": {},
+    "affected_pages": [
+      "getting-started"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "index build",
+    "actor": "indexion",
+    "summary": "Built index: 3 categories, 10 hub pages + vectors",
+    "details": {},
+    "affected_pages": []
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: cmd-claude",
+    "details": {},
+    "affected_pages": [
+      "cmd-claude"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: overview",
+    "details": {},
+    "affected_pages": [
+      "overview"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: rai-core",
+    "details": {},
+    "affected_pages": [
+      "rai-core"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: specs-workflow",
+    "details": {},
+    "affected_pages": [
+      "specs-workflow"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: adding-subcommand",
+    "details": {},
+    "affected_pages": [
+      "adding-subcommand"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: cmd-issue-pr",
+    "details": {},
+    "affected_pages": [
+      "cmd-issue-pr"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: getting-started",
+    "details": {},
+    "affected_pages": [
+      "getting-started"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: cmd-pair-repeat",
+    "details": {},
+    "affected_pages": [
+      "cmd-pair-repeat"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: cmd-git-gh-gwq-dev",
+    "details": {},
+    "affected_pages": [
+      "cmd-git-gh-gwq-dev"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: architecture",
+    "details": {},
+    "affected_pages": [
+      "architecture"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: shell-execution-policy",
+    "details": {},
+    "affected_pages": [
+      "shell-execution-policy"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: cmd-misc",
+    "details": {},
+    "affected_pages": [
+      "cmd-misc"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: cmd-develop",
+    "details": {},
+    "affected_pages": [
+      "cmd-develop"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "pages update",
+    "actor": "agent:claude",
+    "summary": "Updated page: cmd-conflicts",
+    "details": {},
+    "affected_pages": [
+      "cmd-conflicts"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "lint",
+    "actor": "indexion",
+    "summary": "1 issues found across 14 pages",
+    "details": {},
+    "affected_pages": [
+      "getting-started"
+    ]
+  },
+  {
+    "timestamp": "0",
+    "operation": "index build",
+    "actor": "indexion",
+    "summary": "Built index: 3 categories, 10 hub pages + vectors",
+    "details": {},
+    "affected_pages": []
+  },
+  {
+    "timestamp": "1779154869740",
+    "operation": "ingest",
+    "actor": "indexion",
+    "summary": "0 pages need attention",
+    "details": {},
+    "affected_pages": []
+  }
+]

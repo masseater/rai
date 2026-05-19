@@ -1,0 +1,209 @@
+{
+  "title": "Wiki",
+  "pages": [
+    {
+      "id": "overview",
+      "title": "Overview",
+      "file": "overview.md",
+      "sources": [
+        "README.md",
+        "AGENTS.md",
+        "Cargo.toml",
+        "crates/"
+      ],
+      "children": [],
+      "provenance": "synthesized",
+      "last_actor": "agent:claude"
+    },
+    {
+      "id": "getting-started",
+      "title": "Getting Started",
+      "file": "getting-started.md",
+      "sources": [
+        "README.md",
+        "Cargo.toml",
+        "dist-workspace.toml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/release.yml",
+        "crates/cmd/rai-cmd-completion/"
+      ],
+      "children": [],
+      "provenance": "synthesized",
+      "last_actor": "agent:claude"
+    },
+    {
+      "id": "architecture",
+      "title": "Architecture",
+      "file": "architecture.md",
+      "sources": [
+        "Cargo.toml",
+        "crates/rai/src/main.rs",
+        "crates/rai/Cargo.toml",
+        "crates/cmd/AGENTS.md"
+      ],
+      "children": [],
+      "provenance": "synthesized",
+      "last_actor": "agent:claude"
+    },
+    {
+      "id": "rai-core",
+      "title": "rai-core",
+      "file": "rai-core.md",
+      "sources": [
+        "crates/rai-core/"
+      ],
+      "children": [],
+      "provenance": "synthesized",
+      "last_actor": "agent:claude"
+    },
+    {
+      "id": "shell-execution-policy",
+      "title": "Shell Execution Policy",
+      "file": "shell-execution-policy.md",
+      "sources": [
+        "crates/rai-core/src/shell.rs",
+        "crates/rai-core/tests/shell_smoke.rs",
+        "docs/specs/16-shell-execution-policy.md",
+        "AGENTS.md"
+      ],
+      "children": [],
+      "provenance": "synthesized",
+      "last_actor": "agent:claude"
+    },
+    {
+      "id": "adding-subcommand",
+      "title": "Adding a New Subcommand",
+      "file": "adding-subcommand.md",
+      "sources": [
+        "crates/cmd/AGENTS.md",
+        "crates/cmd/rai-cmd-hello/",
+        "crates/rai/src/main.rs",
+        "crates/rai/Cargo.toml",
+        "Cargo.toml"
+      ],
+      "children": [],
+      "provenance": "synthesized",
+      "last_actor": "agent:claude"
+    },
+    {
+      "id": "cmd-develop",
+      "title": "rai develop",
+      "file": "cmd-develop.md",
+      "sources": [
+        "crates/cmd/rai-cmd-develop/",
+        "docs/specs/18-develop.md",
+        "docs/specs/19-develop-resume.md",
+        "docs/specs/20-ai-prompt-wording.md"
+      ],
+      "children": [],
+      "provenance": "synthesized",
+      "last_actor": "agent:claude"
+    },
+    {
+      "id": "cmd-claude",
+      "title": "rai claude",
+      "file": "cmd-claude.md",
+      "sources": [
+        "crates/cmd/rai-cmd-claude/",
+        "crates/rai-core/src/claude.rs",
+        "docs/specs/04-claude-format.md",
+        "docs/specs/21-claude-print.md",
+        "docs/specs/22-claude-pair.md",
+        "docs/specs/23-claude-usage.md"
+      ],
+      "children": [],
+      "provenance": "synthesized",
+      "last_actor": "agent:claude"
+    },
+    {
+      "id": "cmd-conflicts",
+      "title": "rai conflicts",
+      "file": "cmd-conflicts.md",
+      "sources": [
+        "crates/cmd/rai-cmd-conflicts/",
+        "docs/specs/11-conflicts.md"
+      ],
+      "children": [],
+      "provenance": "synthesized",
+      "last_actor": "agent:claude"
+    },
+    {
+      "id": "cmd-issue-pr",
+      "title": "rai issue / rai pr",
+      "file": "cmd-issue-pr.md",
+      "sources": [
+        "crates/cmd/rai-cmd-issue/",
+        "crates/cmd/rai-cmd-pr/",
+        "docs/specs/13-issue-inventory.md",
+        "docs/specs/15-issue-triage.md",
+        "docs/specs/08-pr-wait.md"
+      ],
+      "children": [],
+      "provenance": "synthesized",
+      "last_actor": "agent:claude"
+    },
+    {
+      "id": "cmd-git-gh-gwq-dev",
+      "title": "rai git / gh / gwq / dev",
+      "file": "cmd-git-gh-gwq-dev.md",
+      "sources": [
+        "crates/cmd/rai-cmd-git/",
+        "crates/cmd/rai-cmd-gh/",
+        "crates/cmd/rai-cmd-gwq/",
+        "crates/cmd/rai-cmd-dev/",
+        "docs/specs/03-gh-rate-limit.md",
+        "docs/specs/05-dev.md",
+        "docs/specs/06-git-autopull.md",
+        "docs/specs/07-git-track-mine.md",
+        "docs/specs/10-gwq-clean.md"
+      ],
+      "children": [],
+      "provenance": "synthesized",
+      "last_actor": "agent:claude"
+    },
+    {
+      "id": "cmd-pair-repeat",
+      "title": "rai pair / rai repeat",
+      "file": "cmd-pair-repeat.md",
+      "sources": [
+        "crates/cmd/rai-cmd-pair/",
+        "crates/cmd/rai-cmd-repeat/",
+        "docs/specs/01-pair.md",
+        "docs/specs/17-repeat.md"
+      ],
+      "children": [],
+      "provenance": "synthesized",
+      "last_actor": "agent:claude"
+    },
+    {
+      "id": "cmd-misc",
+      "title": "rai date / doctor / hello / completion",
+      "file": "cmd-misc.md",
+      "sources": [
+        "crates/cmd/rai-cmd-date/",
+        "crates/cmd/rai-cmd-doctor/",
+        "crates/cmd/rai-cmd-hello/",
+        "crates/cmd/rai-cmd-completion/",
+        "docs/specs/02-date.md",
+        "docs/specs/12-completion.md",
+        "docs/specs/14-doctor.md"
+      ],
+      "children": [],
+      "provenance": "synthesized",
+      "last_actor": "agent:claude"
+    },
+    {
+      "id": "specs-workflow",
+      "title": "Specs Workflow",
+      "file": "specs-workflow.md",
+      "sources": [
+        "docs/specs/",
+        "AGENTS.md",
+        "CLAUDE.md"
+      ],
+      "children": [],
+      "provenance": "synthesized",
+      "last_actor": "agent:claude"
+    }
+  ]
+}

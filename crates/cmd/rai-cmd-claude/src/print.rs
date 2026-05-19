@@ -775,7 +775,7 @@ mod tests {
     /// 簡易な tempdir cleanup ガード (`tempfile` クレートを workspace に足さずに済ます)。
     fn scopeguard(path: &Path) -> impl Drop + '_ {
         struct G<'a>(&'a Path);
-        impl<'a> Drop for G<'a> {
+        impl Drop for G<'_> {
             fn drop(&mut self) {
                 let _ = fs::remove_dir_all(self.0);
             }

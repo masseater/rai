@@ -891,7 +891,7 @@ mod tests {
         );
         let tmp = std::env::temp_dir().join(unique);
         struct CleanupGuard<'a>(&'a std::path::Path);
-        impl<'a> Drop for CleanupGuard<'a> {
+        impl Drop for CleanupGuard<'_> {
             fn drop(&mut self) {
                 let _ = std::fs::remove_dir_all(self.0);
             }

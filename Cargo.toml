@@ -49,6 +49,7 @@ shell-words = "1"
 libc = "0.2"
 fs2 = "0.4"
 uuid = { version = "1", features = ["v4"] }
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 
 [profile.release]
 lto = "thin"
