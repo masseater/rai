@@ -86,7 +86,9 @@ pub struct ProfileUsage {
 #[derive(Debug, Clone, Copy)]
 pub struct RateWindow {
     pub used_percentage: f64,
-    pub resets_at: i64,
+    /// 直近で使用がまだ無い 5h 枠などは Anthropic 側が `resets_at: null` を返す。
+    /// その場合は `None` (表示は "—") で utilization だけ出す。
+    pub resets_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -510,10 +512,12 @@ pub fn extract_windows(body: &serde_json::Value) -> (Option<RateWindow>, Option<
             return None;
         }
         let used = obj.get("utilization").and_then(|v| v.as_f64())?;
+        // `resets_at: null` (= 直近の使用が無くまだ枠が動いていない) はそのまま
+        // 受け入れる。utilization が取れているなら window 自体は存在する。
         let resets = obj
             .get("resets_at")
             .and_then(|v| v.as_str())
-            .and_then(parse_iso8601_to_epoch)?;
+            .and_then(parse_iso8601_to_epoch);
         Some(RateWindow {
             used_percentage: used,
             resets_at: resets,
@@ -885,7 +889,10 @@ fn format_pct(pct: f64) -> String {
     format!("{:>3.0}%", pct)
 }
 
-fn format_reset(epoch_sec: i64) -> String {
+fn format_reset(epoch_sec: Option<i64>) -> String {
+    let Some(epoch_sec) = epoch_sec else {
+        return "—".to_string();
+    };
     match Utc.timestamp_opt(epoch_sec, 0).single() {
         Some(dt) => dt
             .with_timezone(&Local)
@@ -946,7 +953,7 @@ mod tests {
         let five = five.unwrap();
         assert!((five.used_percentage - 25.0).abs() < 1e-9);
         // 2026-05-19T05:40:00Z = 1779169200
-        assert_eq!(five.resets_at, 1779169200);
+        assert_eq!(five.resets_at, Some(1779169200));
         let seven = seven.unwrap();
         assert!((seven.used_percentage - 84.0).abs() < 1e-9);
     }
@@ -966,6 +973,19 @@ mod tests {
         let (five, seven) = extract_windows(&v);
         assert!(five.is_none());
         assert!(seven.is_none());
+    }
+
+    #[test]
+    fn extracts_window_with_null_resets_at() {
+        // 直近で 5h 枠が動いていない場合 Anthropic は resets_at=null を返す。
+        // utilization=0% でも window 自体は存在するので、表示は捨てない。
+        let v: serde_json::Value =
+            serde_json::from_str(r#"{"five_hour": {"utilization": 0.0, "resets_at": null}}"#)
+                .unwrap();
+        let (five, _seven) = extract_windows(&v);
+        let five = five.expect("five_hour should be Some even when resets_at is null");
+        assert_eq!(five.used_percentage, 0.0);
+        assert_eq!(five.resets_at, None);
     }
 
     #[test]
@@ -1037,11 +1057,11 @@ mod tests {
                     tier: Some("max_20x".into()),
                     five_hour: Some(RateWindow {
                         used_percentage: 72.0,
-                        resets_at: 1747691400,
+                        resets_at: Some(1747691400),
                     }),
                     seven_day: Some(RateWindow {
                         used_percentage: 41.0,
-                        resets_at: 1748008800,
+                        resets_at: Some(1748008800),
                     }),
                     error: None,
                 },
