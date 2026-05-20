@@ -657,10 +657,7 @@ fn fetch_one(
     // 1 トークンの最小推論を送って起動し、もう一度 usage を取って実 reset 時刻に
     // 差し替える。kick が失敗しても致命扱いせず、元の null 状態 (= 表示は "—")
     // をそのまま出す。
-    if out.error.is_none()
-        && needs_kick(&out)
-        && client.kick_window(&oauth.access_token).is_ok()
-    {
+    if out.error.is_none() && needs_kick(&out) && client.kick_window(&oauth.access_token).is_ok() {
         if let Ok(body) = client.get_usage(&oauth.access_token) {
             let (five, seven) = extract_windows(&body);
             out.five_hour = five;
