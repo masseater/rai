@@ -17,6 +17,10 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 const USAGE_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
+const OAUTH_TOKEN_URL: &str = "https://claude.ai/v1/oauth/token";
+/// Claude Code OAuth client ID. Public; identifies this OAuth client to the
+/// token endpoint. Same value the official `claude` CLI uses.
+const OAUTH_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 
 /// `rai ccs usage [OPTIONS]`
 #[derive(Debug, Args)]
@@ -88,7 +92,7 @@ pub struct RateWindow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProfileError {
     NoCredentials,
-    Expired,
+    RefreshFailed(String),
     AuthFailed,
     Timeout,
     Http(String),
@@ -98,7 +102,7 @@ impl ProfileError {
     fn note(&self) -> String {
         match self {
             Self::NoCredentials => "no credentials".to_string(),
-            Self::Expired => "expired — run ccs <profile>".to_string(),
+            Self::RefreshFailed(msg) => format!("refresh failed: {msg}"),
             Self::AuthFailed => "auth failed".to_string(),
             Self::Timeout => "timeout".to_string(),
             Self::Http(msg) => format!("error: {msg}"),
@@ -108,7 +112,7 @@ impl ProfileError {
     fn as_json_str(&self) -> &'static str {
         match self {
             Self::NoCredentials => "no_credentials",
-            Self::Expired => "expired",
+            Self::RefreshFailed(_) => "refresh_failed",
             Self::AuthFailed => "auth_failed",
             Self::Timeout => "timeout",
             Self::Http(_) => "http_error",
@@ -120,7 +124,11 @@ impl ProfileError {
     fn is_fatal(&self) -> bool {
         matches!(
             self,
-            Self::Expired | Self::AuthFailed | Self::Timeout | Self::Http(_) | Self::NoCredentials
+            Self::RefreshFailed(_)
+                | Self::AuthFailed
+                | Self::Timeout
+                | Self::Http(_)
+                | Self::NoCredentials
         )
     }
 }
@@ -220,11 +228,24 @@ struct CredentialsFile {
 struct ClaudeAiOauth {
     #[serde(rename = "accessToken")]
     access_token: String,
+    #[serde(rename = "refreshToken", default)]
+    refresh_token: Option<String>,
     /// epoch milliseconds.
     #[serde(rename = "expiresAt", default)]
     expires_at: Option<i64>,
     #[serde(rename = "rateLimitTier", default)]
     rate_limit_tier: Option<String>,
+}
+
+/// credentials 保存元。refresh 後の書き戻し先を識別する。
+#[derive(Debug, Clone)]
+pub enum CredentialsSource {
+    File(PathBuf),
+    #[cfg(target_os = "macos")]
+    Keychain {
+        service: String,
+        account: String,
+    },
 }
 
 /// expiresAt (epoch ms) が `now_ms` (epoch ms) 以下なら expired。
@@ -254,14 +275,17 @@ fn parse_credentials_str(raw: &str) -> std::result::Result<ClaudeAiOauth, Profil
     parsed.claude_ai_oauth.ok_or(ProfileError::NoCredentials)
 }
 
-fn read_credentials(instance_path: &str) -> std::result::Result<ClaudeAiOauth, ProfileError> {
+fn read_credentials(
+    instance_path: &str,
+) -> std::result::Result<(ClaudeAiOauth, CredentialsSource), ProfileError> {
     // 1) instance 直下の .credentials.json (旧形式 / file-based)。
     let path = PathBuf::from(instance_path).join(".credentials.json");
     match fs::read(&path) {
         Ok(bytes) => {
             let s = std::str::from_utf8(&bytes)
                 .map_err(|_| ProfileError::Http("credentials.json not utf8".into()))?;
-            return parse_credentials_str(s);
+            let oauth = parse_credentials_str(s)?;
+            return Ok((oauth, CredentialsSource::File(path)));
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(ProfileError::Http(format!("read credentials failed: {e}"))),
@@ -274,7 +298,7 @@ fn read_credentials(instance_path: &str) -> std::result::Result<ClaudeAiOauth, P
 #[cfg(target_os = "macos")]
 fn read_credentials_from_keychain(
     instance_path: &str,
-) -> std::result::Result<ClaudeAiOauth, ProfileError> {
+) -> std::result::Result<(ClaudeAiOauth, CredentialsSource), ProfileError> {
     let service = keychain_service_name(instance_path);
     let out = shell::user_shell_argv(&["security", "find-generic-password", "-s", &service, "-w"])
         .output()
@@ -285,14 +309,47 @@ fn read_credentials_from_keychain(
     }
     let s = std::str::from_utf8(&out.stdout)
         .map_err(|_| ProfileError::Http("keychain output not utf8".into()))?;
-    parse_credentials_str(s)
+    let oauth = parse_credentials_str(s)?;
+    let account = keychain_account(&service)?;
+    Ok((oauth, CredentialsSource::Keychain { service, account }))
 }
 
 #[cfg(not(target_os = "macos"))]
 fn read_credentials_from_keychain(
     _instance_path: &str,
-) -> std::result::Result<ClaudeAiOauth, ProfileError> {
+) -> std::result::Result<(ClaudeAiOauth, CredentialsSource), ProfileError> {
     Err(ProfileError::NoCredentials)
+}
+
+/// keychain entry の `"acct"` 属性 (= 所有ユーザー) を引く。書き戻しの -a に必要。
+#[cfg(target_os = "macos")]
+fn keychain_account(service: &str) -> std::result::Result<String, ProfileError> {
+    let out = shell::user_shell_argv(&["security", "find-generic-password", "-s", service])
+        .output()
+        .map_err(|e| ProfileError::Http(format!("spawn security (attrs): {e}")))?;
+    if !out.status.success() {
+        return Err(ProfileError::NoCredentials);
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    parse_keychain_account(&text).ok_or_else(|| {
+        ProfileError::Http("could not parse 'acct' attribute from keychain entry".into())
+    })
+}
+
+// `security find-generic-password -s <svc>` の出力に含まれる
+//     "acct"<blob>="pc386"
+// 行から値を抜き取る。
+#[cfg(target_os = "macos")]
+fn parse_keychain_account(attrs_dump: &str) -> Option<String> {
+    for line in attrs_dump.lines() {
+        let Some(rest) = line.trim().strip_prefix("\"acct\"<blob>=") else {
+            continue;
+        };
+        let rest = rest.strip_prefix('"')?;
+        let end = rest.find('"')?;
+        return Some(rest[..end].to_string());
+    }
+    None
 }
 
 // ---- HTTP client trait + ureq impl ------------------------------------------
@@ -300,6 +357,20 @@ fn read_credentials_from_keychain(
 pub trait UsageClient: Sync {
     fn get_usage(&self, access_token: &str)
         -> std::result::Result<serde_json::Value, ProfileError>;
+
+    /// `https://claude.ai/v1/oauth/token` を叩いて access/refresh token を更新する。
+    fn refresh_token(
+        &self,
+        refresh_token: &str,
+    ) -> std::result::Result<RefreshedTokens, ProfileError>;
+}
+
+/// OAuth refresh の結果。`expires_at` は epoch ms。
+#[derive(Debug, Clone)]
+pub struct RefreshedTokens {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_at: i64,
 }
 
 pub struct UreqClient {
@@ -354,6 +425,71 @@ impl UsageClient for UreqClient {
             }
         }
     }
+
+    fn refresh_token(
+        &self,
+        refresh_token: &str,
+    ) -> std::result::Result<RefreshedTokens, ProfileError> {
+        let body = serde_json::json!({
+            "grant_type": "refresh_token",
+            "client_id": OAUTH_CLIENT_ID,
+            "refresh_token": refresh_token,
+        });
+        let resp = self
+            .agent
+            .post(OAUTH_TOKEN_URL)
+            .set("Content-Type", "application/json")
+            .set("Accept", "application/json")
+            .send_json(body);
+        let value: serde_json::Value = match resp {
+            Ok(r) => r
+                .into_json()
+                .map_err(|e| ProfileError::RefreshFailed(format!("decode body: {e}")))?,
+            Err(ureq::Error::Status(code, r)) => {
+                drop(r);
+                return Err(ProfileError::RefreshFailed(format!("HTTP {code}")));
+            }
+            Err(ureq::Error::Transport(t)) => {
+                let msg = format!("{}", t.kind());
+                if msg.to_lowercase().contains("time") {
+                    return Err(ProfileError::Timeout);
+                }
+                return Err(ProfileError::RefreshFailed(msg));
+            }
+        };
+        parse_refresh_response(&value, now_unix_ms())
+    }
+}
+
+/// Anthropic OAuth token endpoint のレスポンス JSON を `RefreshedTokens` に整形する。
+/// `expires_in` (秒) が来た場合は `now_ms` から絶対 epoch ms に変換する。欠落時は
+/// 10 時間 (Claude Code の典型値) を既定とする。
+pub fn parse_refresh_response(
+    value: &serde_json::Value,
+    now_ms: i64,
+) -> std::result::Result<RefreshedTokens, ProfileError> {
+    let access_token = value
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ProfileError::RefreshFailed("no access_token in response".into()))?
+        .to_string();
+    let refresh_token = value
+        .get("refresh_token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ProfileError::RefreshFailed("no refresh_token in response".into()))?
+        .to_string();
+    let expires_at = if let Some(secs) = value.get("expires_in").and_then(|v| v.as_i64()) {
+        now_ms + secs * 1000
+    } else if let Some(ms) = value.get("expires_at").and_then(|v| v.as_i64()) {
+        ms
+    } else {
+        now_ms + 36_000 * 1000
+    };
+    Ok(RefreshedTokens {
+        access_token,
+        refresh_token,
+        expires_at,
+    })
 }
 
 // ---- response -> RateWindow ------------------------------------------------
@@ -432,8 +568,8 @@ fn fetch_one(
         seven_day: None,
         error: None,
     };
-    let oauth = match read_credentials(&p.instance_path) {
-        Ok(o) => o,
+    let (mut oauth, source) = match read_credentials(&p.instance_path) {
+        Ok(pair) => pair,
         Err(e) => {
             out.error = Some(e);
             return out;
@@ -441,8 +577,25 @@ fn fetch_one(
     };
     out.tier = oauth.rate_limit_tier.as_deref().map(display_tier);
     if is_expired(oauth.expires_at, now_ms) {
-        out.error = Some(ProfileError::Expired);
-        return out;
+        let Some(rt) = oauth.refresh_token.clone() else {
+            out.error = Some(ProfileError::RefreshFailed("no refresh_token".into()));
+            return out;
+        };
+        match client.refresh_token(&rt) {
+            Ok(refreshed) => {
+                if let Err(e) = write_back_tokens(&source, &refreshed) {
+                    out.error = Some(ProfileError::RefreshFailed(format!("write back: {e}")));
+                    return out;
+                }
+                oauth.access_token = refreshed.access_token;
+                oauth.refresh_token = Some(refreshed.refresh_token);
+                oauth.expires_at = Some(refreshed.expires_at);
+            }
+            Err(e) => {
+                out.error = Some(e);
+                return out;
+            }
+        }
     }
     match client.get_usage(&oauth.access_token) {
         Ok(body) => {
@@ -453,6 +606,103 @@ fn fetch_one(
         Err(e) => out.error = Some(e),
     }
     out
+}
+
+/// Refresh で得た新 token を読み出し元と同じ場所に書き戻す。
+fn write_back_tokens(
+    source: &CredentialsSource,
+    tokens: &RefreshedTokens,
+) -> std::result::Result<(), String> {
+    match source {
+        CredentialsSource::File(path) => write_back_file(path, tokens),
+        #[cfg(target_os = "macos")]
+        CredentialsSource::Keychain { service, account } => {
+            write_back_keychain(service, account, tokens)
+        }
+    }
+}
+
+fn write_back_file(path: &PathBuf, tokens: &RefreshedTokens) -> std::result::Result<(), String> {
+    let bytes = fs::read(path).map_err(|e| format!("read: {e}"))?;
+    let existing = std::str::from_utf8(&bytes).map_err(|e| format!("utf8: {e}"))?;
+    let merged = merge_tokens_into_credentials(existing.trim(), tokens)?;
+    fs::write(path, merged).map_err(|e| format!("write: {e}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn write_back_keychain(
+    service: &str,
+    account: &str,
+    tokens: &RefreshedTokens,
+) -> std::result::Result<(), String> {
+    // 既存 entry を読み出し、token 3 点組だけ差し替える。
+    // (scopes / subscriptionType / rateLimitTier 等の元フィールドを保つため。)
+    let existing =
+        shell::user_shell_argv(&["security", "find-generic-password", "-s", service, "-w"])
+            .output()
+            .map_err(|e| format!("spawn security (read): {e}"))?;
+    let existing_str = if existing.status.success() {
+        String::from_utf8(existing.stdout).map_err(|e| format!("read utf8: {e}"))?
+    } else {
+        String::new()
+    };
+    let merged = merge_tokens_into_credentials(existing_str.trim(), tokens)?;
+    let out = shell::user_shell_argv(&[
+        "security",
+        "add-generic-password",
+        "-U",
+        "-s",
+        service,
+        "-a",
+        account,
+        "-w",
+        &merged,
+    ])
+    .output()
+    .map_err(|e| format!("spawn security: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "security add-generic-password failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+/// 既存 credentials JSON (空文字 OK) に新 token 3 点組をマージして文字列化する。
+/// 既存に `claudeAiOauth` が無い場合は新規作成する。
+pub fn merge_tokens_into_credentials(
+    existing: &str,
+    tokens: &RefreshedTokens,
+) -> std::result::Result<String, String> {
+    let mut root: serde_json::Value = if existing.is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str(existing).map_err(|e| format!("parse existing: {e}"))?
+    };
+    let obj = root
+        .as_object_mut()
+        .ok_or_else(|| "credentials root is not an object".to_string())?;
+    let oauth = obj
+        .entry("claudeAiOauth")
+        .or_insert_with(|| serde_json::json!({}));
+    let oauth_obj = oauth
+        .as_object_mut()
+        .ok_or_else(|| "claudeAiOauth is not an object".to_string())?;
+    oauth_obj.insert(
+        "accessToken".into(),
+        serde_json::Value::String(tokens.access_token.clone()),
+    );
+    oauth_obj.insert(
+        "refreshToken".into(),
+        serde_json::Value::String(tokens.refresh_token.clone()),
+    );
+    oauth_obj.insert(
+        "expiresAt".into(),
+        serde_json::Value::Number(tokens.expires_at.into()),
+    );
+    serde_json::to_string(&root).map_err(|e| format!("serialize: {e}"))
 }
 
 fn run_in_chunks<T, R, F>(items: Vec<T>, chunk_size: usize, f: F) -> Vec<R>
@@ -801,7 +1051,7 @@ mod tests {
                     tier: None,
                     five_hour: None,
                     seven_day: None,
-                    error: Some(ProfileError::Expired),
+                    error: Some(ProfileError::RefreshFailed("no refresh_token".into())),
                 },
             ],
         };
@@ -809,27 +1059,49 @@ mod tests {
         assert_eq!(v["profiles"][0]["name"], "c1");
         assert_eq!(v["profiles"][0]["is_default"], true);
         assert_eq!(v["profiles"][0]["five_hour"]["used_percentage"], 72.0);
-        assert_eq!(v["profiles"][1]["error"], "expired");
+        assert_eq!(v["profiles"][1]["error"], "refresh_failed");
         assert!(v["profiles"][1]["five_hour"].is_null());
     }
 
     #[test]
     fn fatal_error_classification() {
-        assert!(ProfileError::Expired.is_fatal());
+        assert!(ProfileError::RefreshFailed("x".into()).is_fatal());
         assert!(ProfileError::AuthFailed.is_fatal());
         assert!(ProfileError::Timeout.is_fatal());
         assert!(ProfileError::NoCredentials.is_fatal());
     }
 
-    /// 簡易 mock client: 渡された JSON をそのまま返す。
-    struct MockClient(serde_json::Value);
+    /// 簡易 mock client。`usage` は固定 JSON を返す。`refresh` は与えられた
+    /// `RefreshedTokens` を返す。`None` のときは refresh 自体を呼ばれない想定。
+    struct MockClient {
+        usage: serde_json::Value,
+        refresh: Option<RefreshedTokens>,
+    }
+
+    impl MockClient {
+        fn usage_only(v: serde_json::Value) -> Self {
+            Self {
+                usage: v,
+                refresh: None,
+            }
+        }
+    }
 
     impl UsageClient for MockClient {
         fn get_usage(
             &self,
             _access_token: &str,
         ) -> std::result::Result<serde_json::Value, ProfileError> {
-            Ok(self.0.clone())
+            Ok(self.usage.clone())
+        }
+
+        fn refresh_token(
+            &self,
+            _refresh_token: &str,
+        ) -> std::result::Result<RefreshedTokens, ProfileError> {
+            self.refresh
+                .clone()
+                .ok_or_else(|| ProfileError::RefreshFailed("mock has no refresh".into()))
         }
     }
 
@@ -855,7 +1127,7 @@ mod tests {
         let body = serde_json::json!({
             "five_hour": {"utilization": 50.0, "resets_at": "2026-05-19T05:40:00Z"}
         });
-        let client = MockClient(body);
+        let client = MockClient::usage_only(body);
         let res = fetch_one(&prof, 0, &client);
         assert_eq!(res.tier.as_deref(), Some("max_20x"));
         assert!(res.error.is_none());
@@ -875,15 +1147,15 @@ mod tests {
             instance_path: inst.to_string_lossy().into_owned(),
         };
         let body = serde_json::json!({});
-        let client = MockClient(body);
+        let client = MockClient::usage_only(body);
         let res = fetch_one(&prof, 0, &client);
         assert_eq!(res.error.as_ref().unwrap(), &ProfileError::NoCredentials);
     }
 
     #[test]
-    fn fetch_one_expired() {
+    fn fetch_one_expired_without_refresh_token() {
         let dir = tempdir_or_skip();
-        let inst = dir.join("expd");
+        let inst = dir.join("expd-no-rt");
         std::fs::create_dir_all(&inst).unwrap();
         let creds = serde_json::json!({
             "claudeAiOauth": {
@@ -898,9 +1170,78 @@ mod tests {
             is_default: false,
             instance_path: inst.to_string_lossy().into_owned(),
         };
-        let client = MockClient(serde_json::json!({}));
+        let client = MockClient::usage_only(serde_json::json!({}));
         let res = fetch_one(&prof, 999_999_999_999_i64, &client);
-        assert_eq!(res.error.as_ref().unwrap(), &ProfileError::Expired);
+        assert!(matches!(
+            res.error.as_ref().unwrap(),
+            ProfileError::RefreshFailed(_)
+        ));
+    }
+
+    #[test]
+    fn fetch_one_refreshes_and_writes_back_file() {
+        let dir = tempdir_or_skip();
+        let inst = dir.join("expd-with-rt");
+        std::fs::create_dir_all(&inst).unwrap();
+        let creds_path = inst.join(".credentials.json");
+        let creds = serde_json::json!({
+            "claudeAiOauth": {
+                "accessToken": "old-access",
+                "refreshToken": "old-refresh",
+                "expiresAt": 1_i64,
+                "rateLimitTier": "default_claude_max_20x",
+                "scopes": ["user:inference"]
+            }
+        });
+        std::fs::write(&creds_path, creds.to_string()).unwrap();
+        let prof = CcsProfile {
+            name: "expd".into(),
+            kind: "account".into(),
+            is_default: false,
+            instance_path: inst.to_string_lossy().into_owned(),
+        };
+        let client = MockClient {
+            usage: serde_json::json!({
+                "five_hour": {"utilization": 12.0, "resets_at": "2026-05-19T05:40:00Z"}
+            }),
+            refresh: Some(RefreshedTokens {
+                access_token: "new-access".into(),
+                refresh_token: "new-refresh".into(),
+                expires_at: 9_999_999_999_999_i64,
+            }),
+        };
+        let res = fetch_one(&prof, 999_999_999_999_i64, &client);
+        assert!(res.error.is_none(), "unexpected error: {:?}", res.error);
+        assert_eq!(res.five_hour.unwrap().used_percentage, 12.0);
+        // 書き戻し検証: token 3 点組は更新、他フィールドは保持。
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&creds_path).unwrap()).unwrap();
+        let o = &written["claudeAiOauth"];
+        assert_eq!(o["accessToken"], "new-access");
+        assert_eq!(o["refreshToken"], "new-refresh");
+        assert_eq!(o["expiresAt"], 9_999_999_999_999_i64);
+        assert_eq!(o["rateLimitTier"], "default_claude_max_20x");
+        assert_eq!(o["scopes"][0], "user:inference");
+    }
+
+    #[test]
+    fn parse_refresh_response_uses_expires_in() {
+        let v = serde_json::json!({
+            "access_token": "a",
+            "refresh_token": "r",
+            "expires_in": 3600
+        });
+        let t = parse_refresh_response(&v, 1_000_000).expect("parsed");
+        assert_eq!(t.access_token, "a");
+        assert_eq!(t.refresh_token, "r");
+        assert_eq!(t.expires_at, 1_000_000 + 3600 * 1000);
+    }
+
+    #[test]
+    fn parse_refresh_response_missing_access_token_errs() {
+        let v = serde_json::json!({"refresh_token": "r"});
+        let err = parse_refresh_response(&v, 0).unwrap_err();
+        assert!(matches!(err, ProfileError::RefreshFailed(_)));
     }
 
     /// std::env::temp_dir 下に test-uniq な dir を作る。
