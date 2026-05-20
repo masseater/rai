@@ -40,11 +40,13 @@ Anthropic 側のレートリミット枠 (5 時間ローリング / 7 日 (週�
   - NOTE 列 (異常時の理由: `no credentials` / `refresh failed` / `auth failed` /
     `timeout` / `no usage yet` 等)
 - Anthropic 側が `resets_at: null` を返す (= 5h / 7d 窓が動いていない、直近に使用が無い)
-  プロファイルについては、テーブル表示の reset 列を「もし今このプロファイルを使い
-  始めたら次の reset はいつになるか」を `fetched_at + window` (5h / 7d) で **投影**
-  して埋める。投影値であることは先頭の `~` で明示する (例: `~2026-05-20 19:48`)。
-  `--json` 出力は API のままの `null` を保つ — スクリプト側で投影と実値を区別
-  できるようにするため。
+  プロファイルについては、`/v1/messages` に **1 トークンの最小推論リクエスト**
+  (model: `claude-haiku-4-5`, max_tokens: 1, content: `"x"`) を送って窓を起動し、
+  もう一度 usage を取得して実 reset 時刻を表示する。kick リクエストの枠消費は
+  ごく僅か (utilization は 0% のまま) で、ユーザーが知りたいのは「次の reset
+  時刻」そのものであるため、表示のために起動する選択をする。kick が失敗した
+  場合は元の `null` のまま表示 (`—`) する。投影値は表示しない (API 由来の値
+  以外は出さない方針)。
 - credentials の `accessToken` が `expiresAt` を過ぎている場合、`refreshToken` を
   使って Anthropic OAuth エンドポイントから token を更新し、その結果で usage を
   取得する。更新に成功した場合は新しい `accessToken` / `refreshToken` / `expiresAt`

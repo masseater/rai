@@ -10,14 +10,20 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context as _};
-use chrono::{DateTime, Duration as ChronoDuration, Local, TimeZone, Utc};
+use chrono::{DateTime, Local, TimeZone, Utc};
 use clap::Args;
 use rai_core::{cli::Run, shell, Ctx, Result};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 const USAGE_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
+const MESSAGES_ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
 const OAUTH_TOKEN_URL: &str = "https://claude.ai/v1/oauth/token";
+/// Anthropic 側の 5h / 7d 窓が完全に idle のとき `resets_at: null` で返ってくる。
+/// 実 reset 時刻を得るには「窓を起動」する必要があるので、ここで使う 1 トークン
+/// 起動用モデル。Haiku を選んでいるのは「枠消費を最小にしつつ最も安いモデル」
+/// だから。
+const KICK_MODEL: &str = "claude-haiku-4-5";
 /// Claude Code OAuth client ID. Public; identifies this OAuth client to the
 /// token endpoint. Same value the official `claude` CLI uses.
 const OAUTH_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
@@ -365,6 +371,11 @@ pub trait UsageClient: Sync {
         &self,
         refresh_token: &str,
     ) -> std::result::Result<RefreshedTokens, ProfileError>;
+
+    /// 5h / 7d 窓の `resets_at` が null で返ってきたときに、`/v1/messages` へ
+    /// 1 トークンの最小推論リクエストを送って窓を起動する。これで次の usage 取得
+    /// 時に Anthropic 側が実 reset 時刻を返すようになる。
+    fn kick_window(&self, access_token: &str) -> std::result::Result<(), ProfileError>;
 }
 
 /// OAuth refresh の結果。`expires_at` は epoch ms。
@@ -460,6 +471,39 @@ impl UsageClient for UreqClient {
             }
         };
         parse_refresh_response(&value, now_unix_ms())
+    }
+
+    fn kick_window(&self, access_token: &str) -> std::result::Result<(), ProfileError> {
+        let body = serde_json::json!({
+            "model": KICK_MODEL,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "x"}],
+        });
+        let resp = self
+            .agent
+            .post(MESSAGES_ENDPOINT)
+            .set("Authorization", &format!("Bearer {access_token}"))
+            .set("anthropic-beta", "oauth-2025-04-20")
+            .set("anthropic-version", "2023-06-01")
+            .set("Content-Type", "application/json")
+            .send_json(body);
+        match resp {
+            Ok(_) => Ok(()),
+            Err(ureq::Error::Status(401, _)) => Err(ProfileError::AuthFailed),
+            Err(ureq::Error::Status(code, r)) => {
+                drop(r);
+                Err(ProfileError::Http(format!("kick HTTP {code}")))
+            }
+            Err(ureq::Error::Transport(t)) if matches!(t.kind(), ureq::ErrorKind::Io) => {
+                let msg = format!("{}", t.kind());
+                if msg.to_lowercase().contains("time") {
+                    Err(ProfileError::Timeout)
+                } else {
+                    Err(ProfileError::Http(format!("kick io: {}", t.kind())))
+                }
+            }
+            Err(ureq::Error::Transport(t)) => Err(ProfileError::Http(format!("kick {}", t.kind()))),
+        }
     }
 }
 
@@ -609,7 +653,34 @@ fn fetch_one(
         }
         Err(e) => out.error = Some(e),
     }
+    // 5h / 7d 窓の resets_at が null のときは「窓が起動していない」状態。
+    // 1 トークンの最小推論を送って起動し、もう一度 usage を取って実 reset 時刻に
+    // 差し替える。kick が失敗しても致命扱いせず、元の null 状態 (= 表示は "—")
+    // をそのまま出す。
+    if out.error.is_none()
+        && needs_kick(&out)
+        && client.kick_window(&oauth.access_token).is_ok()
+    {
+        if let Ok(body) = client.get_usage(&oauth.access_token) {
+            let (five, seven) = extract_windows(&body);
+            out.five_hour = five;
+            out.seven_day = seven;
+        }
+    }
     out
+}
+
+/// 5h / 7d 窓のどちらかが「窓は存在するが resets_at が null」状態かを判定する。
+fn needs_kick(out: &ProfileUsage) -> bool {
+    let five_null = out
+        .five_hour
+        .as_ref()
+        .is_some_and(|w| w.resets_at.is_none());
+    let seven_null = out
+        .seven_day
+        .as_ref()
+        .is_some_and(|w| w.resets_at.is_none());
+    five_null || seven_null
 }
 
 /// Refresh で得た新 token を読み出し元と同じ場所に書き戻す。
@@ -748,11 +819,7 @@ fn render_table(snap: &Snapshot, color: bool) {
         .format("%Y-%m-%d %H:%M %Z");
     println!("ccs Claude usage  (fetched {header_ts})");
     println!();
-    let rows: Vec<Row> = snap
-        .profiles
-        .iter()
-        .map(|p| Row::from_profile(p, snap.fetched_at))
-        .collect();
+    let rows: Vec<Row> = snap.profiles.iter().map(Row::from_profile).collect();
     let widths = Widths::compute(&rows);
     widths.print_header();
     for row in &rows {
@@ -772,7 +839,7 @@ struct Row {
 }
 
 impl Row {
-    fn from_profile(p: &ProfileUsage, fetched_at: DateTime<Utc>) -> Self {
+    fn from_profile(p: &ProfileUsage) -> Self {
         let profile = if p.is_default {
             format!("{} *", p.name)
         } else {
@@ -783,15 +850,12 @@ impl Row {
             Some(w) => (
                 format_pct(w.used_percentage),
                 Some(w.used_percentage),
-                format_reset_with_projection(w.resets_at, fetched_at, ChronoDuration::hours(5)),
+                format_reset(w.resets_at),
             ),
             None => ("—".to_string(), None, "—".to_string()),
         };
         let (seven_used, seven_reset) = match p.seven_day {
-            Some(w) => (
-                format_pct(w.used_percentage),
-                format_reset_with_projection(w.resets_at, fetched_at, ChronoDuration::days(7)),
-            ),
+            Some(w) => (format_pct(w.used_percentage), format_reset(w.resets_at)),
             None => ("—".to_string(), "—".to_string()),
         };
         let note = match &p.error {
@@ -896,27 +960,10 @@ fn format_pct(pct: f64) -> String {
     format!("{:>3.0}%", pct)
 }
 
-/// 窓の `resets_at` が `Some` ならそのまま絶対時刻として整形。
-/// `None` の場合 (= Anthropic 側で「直近に使用が無く 5h / 7d 窓が動いていない」)
-/// は、「もし今このプロファイルを使い始めたら次の reset はいつになるか」
-/// を `fetched_at + window` で投影して表示する。
-/// 表示文字列の先頭に `~` を付けて投影値であることを明示する。
-fn format_reset_with_projection(
-    epoch_sec: Option<i64>,
-    fetched_at: DateTime<Utc>,
-    window: ChronoDuration,
-) -> String {
-    if let Some(sec) = epoch_sec {
-        return format_epoch(sec);
-    }
-    let projected = fetched_at + window;
-    format!(
-        "~{}",
-        projected.with_timezone(&Local).format("%Y-%m-%d %H:%M")
-    )
-}
-
-fn format_epoch(epoch_sec: i64) -> String {
+fn format_reset(epoch_sec: Option<i64>) -> String {
+    let Some(epoch_sec) = epoch_sec else {
+        return "—".to_string();
+    };
     match Utc.timestamp_opt(epoch_sec, 0).single() {
         Some(dt) => dt
             .with_timezone(&Local)
@@ -997,52 +1044,6 @@ mod tests {
         let (five, seven) = extract_windows(&v);
         assert!(five.is_none());
         assert!(seven.is_none());
-    }
-
-    #[test]
-    fn projected_reset_when_null() {
-        // resets_at が null の窓は「fetched_at + window」を投影し、`~` 接頭辞で示す。
-        let fetched = Utc.with_ymd_and_hms(2026, 5, 20, 5, 47, 0).unwrap();
-        let s = format_reset_with_projection(None, fetched, ChronoDuration::hours(5));
-        // 5h 後 = 2026-05-20 10:47 UTC. Local 表示は環境依存なので接頭辞だけ確認。
-        assert!(s.starts_with('~'), "expected ~ prefix, got {s}");
-        assert!(s.len() > 1, "expected projected timestamp, got {s}");
-    }
-
-    #[test]
-    fn absolute_reset_when_present() {
-        // resets_at が Some の場合は接頭辞なしの絶対時刻。
-        let fetched = Utc.with_ymd_and_hms(2026, 5, 20, 5, 47, 0).unwrap();
-        let s = format_reset_with_projection(Some(1779266400), fetched, ChronoDuration::hours(5));
-        assert!(!s.starts_with('~'), "expected no ~ prefix, got {s}");
-    }
-
-    #[test]
-    fn row_projects_5h_reset_when_null() {
-        let fetched = Utc.with_ymd_and_hms(2026, 5, 20, 5, 47, 0).unwrap();
-        let p = ProfileUsage {
-            name: "c1".into(),
-            is_default: true,
-            tier: Some("max_20x".into()),
-            five_hour: Some(RateWindow {
-                used_percentage: 0.0,
-                resets_at: None,
-            }),
-            seven_day: Some(RateWindow {
-                used_percentage: 98.0,
-                resets_at: Some(1779303600),
-            }),
-            error: None,
-        };
-        let row = Row::from_profile(&p, fetched);
-        assert_eq!(row.five_used, "  0%");
-        assert!(
-            row.five_reset.starts_with('~'),
-            "5h reset should be projected when null, got {}",
-            row.five_reset
-        );
-        // 7d 側は API 値があるので接頭辞なし。
-        assert!(!row.seven_reset.starts_with('~'), "got {}", row.seven_reset);
     }
 
     #[test]
@@ -1161,19 +1162,38 @@ mod tests {
         assert!(ProfileError::NoCredentials.is_fatal());
     }
 
-    /// 簡易 mock client。`usage` は固定 JSON を返す。`refresh` は与えられた
-    /// `RefreshedTokens` を返す。`None` のときは refresh 自体を呼ばれない想定。
+    /// 簡易 mock client。`usage_responses` は呼び出し順に返す usage JSON 列。
+    /// 列を使い切ったら最後の値を繰り返し返す。`refresh` / `kick_ok` で各メソッド
+    /// の挙動を制御する。`kick_count` で kick が何回呼ばれたかを観測できる。
     struct MockClient {
-        usage: serde_json::Value,
+        usage_responses: std::sync::Mutex<Vec<serde_json::Value>>,
         refresh: Option<RefreshedTokens>,
+        kick_ok: bool,
+        kick_count: std::sync::atomic::AtomicUsize,
     }
 
     impl MockClient {
         fn usage_only(v: serde_json::Value) -> Self {
             Self {
-                usage: v,
+                usage_responses: std::sync::Mutex::new(vec![v]),
                 refresh: None,
+                kick_ok: true,
+                kick_count: std::sync::atomic::AtomicUsize::new(0),
             }
+        }
+
+        /// 1 回目と 2 回目以降で違う usage JSON を返す mock。kick + refetch の検証に使う。
+        fn with_responses(responses: Vec<serde_json::Value>) -> Self {
+            Self {
+                usage_responses: std::sync::Mutex::new(responses),
+                refresh: None,
+                kick_ok: true,
+                kick_count: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn kicks(&self) -> usize {
+            self.kick_count.load(std::sync::atomic::Ordering::SeqCst)
         }
     }
 
@@ -1182,7 +1202,12 @@ mod tests {
             &self,
             _access_token: &str,
         ) -> std::result::Result<serde_json::Value, ProfileError> {
-            Ok(self.usage.clone())
+            let mut q = self.usage_responses.lock().unwrap();
+            if q.len() > 1 {
+                Ok(q.remove(0))
+            } else {
+                Ok(q.first().cloned().unwrap_or(serde_json::json!({})))
+            }
         }
 
         fn refresh_token(
@@ -1193,6 +1218,86 @@ mod tests {
                 .clone()
                 .ok_or_else(|| ProfileError::RefreshFailed("mock has no refresh".into()))
         }
+
+        fn kick_window(&self, _access_token: &str) -> std::result::Result<(), ProfileError> {
+            self.kick_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.kick_ok {
+                Ok(())
+            } else {
+                Err(ProfileError::Http("kick failed".into()))
+            }
+        }
+    }
+
+    fn write_dummy_creds(inst: &PathBuf, with_tier: bool) {
+        std::fs::create_dir_all(inst).unwrap();
+        let mut oauth = serde_json::json!({
+            "accessToken": "tok",
+            "expiresAt": 9_999_999_999_999_i64,
+        });
+        if with_tier {
+            oauth["rateLimitTier"] = serde_json::Value::String("default_claude_max_20x".into());
+        }
+        let creds = serde_json::json!({ "claudeAiOauth": oauth });
+        std::fs::write(inst.join(".credentials.json"), creds.to_string()).unwrap();
+    }
+
+    #[test]
+    fn fetch_one_kicks_when_5h_resets_at_is_null() {
+        // 初回 usage は five_hour.resets_at=null → kick を 1 回呼んで、2 回目の usage で
+        // 実 reset 時刻を返す mock を組む。
+        let dir = tempdir_or_skip();
+        let inst = dir.join("c1-kick-5h");
+        write_dummy_creds(&inst, true);
+        let prof = CcsProfile {
+            name: "c1".into(),
+            kind: "account".into(),
+            is_default: true,
+            instance_path: inst.to_string_lossy().into_owned(),
+        };
+        let first = serde_json::json!({
+            "five_hour": {"utilization": 0.0, "resets_at": null},
+            "seven_day": {"utilization": 13.0, "resets_at": "2026-05-21T05:00:00Z"}
+        });
+        let second = serde_json::json!({
+            "five_hour": {"utilization": 0.0, "resets_at": "2026-05-20T20:10:00Z"},
+            "seven_day": {"utilization": 13.0, "resets_at": "2026-05-21T05:00:00Z"}
+        });
+        let client = MockClient::with_responses(vec![first, second]);
+        let res = fetch_one(&prof, 0, &client);
+        assert!(res.error.is_none(), "{:?}", res.error);
+        assert_eq!(client.kicks(), 1, "kick should be called exactly once");
+        // 2 回目の usage が反映されて 5h resets_at が埋まる。
+        let five = res.five_hour.unwrap();
+        assert!(
+            five.resets_at.is_some(),
+            "5h reset should be filled after kick"
+        );
+    }
+
+    #[test]
+    fn fetch_one_does_not_kick_when_both_windows_have_reset() {
+        let dir = tempdir_or_skip();
+        let inst = dir.join("c2-no-kick");
+        write_dummy_creds(&inst, true);
+        let prof = CcsProfile {
+            name: "c2".into(),
+            kind: "account".into(),
+            is_default: false,
+            instance_path: inst.to_string_lossy().into_owned(),
+        };
+        let body = serde_json::json!({
+            "five_hour": {"utilization": 60.0, "resets_at": "2026-05-20T17:40:00Z"},
+            "seven_day": {"utilization": 80.0, "resets_at": "2026-05-25T15:00:00Z"}
+        });
+        let client = MockClient::usage_only(body);
+        let _ = fetch_one(&prof, 0, &client);
+        assert_eq!(
+            client.kicks(),
+            0,
+            "kick should not be called when both windows have reset times"
+        );
     }
 
     #[test]
@@ -1291,14 +1396,16 @@ mod tests {
             instance_path: inst.to_string_lossy().into_owned(),
         };
         let client = MockClient {
-            usage: serde_json::json!({
+            usage_responses: std::sync::Mutex::new(vec![serde_json::json!({
                 "five_hour": {"utilization": 12.0, "resets_at": "2026-05-19T05:40:00Z"}
-            }),
+            })]),
             refresh: Some(RefreshedTokens {
                 access_token: "new-access".into(),
                 refresh_token: "new-refresh".into(),
                 expires_at: 9_999_999_999_999_i64,
             }),
+            kick_ok: true,
+            kick_count: std::sync::atomic::AtomicUsize::new(0),
         };
         let res = fetch_one(&prof, 999_999_999_999_i64, &client);
         assert!(res.error.is_none(), "unexpected error: {:?}", res.error);
