@@ -10,7 +10,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context as _};
-use chrono::{DateTime, Local, TimeZone, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Local, TimeZone, Utc};
 use clap::Args;
 use rai_core::{cli::Run, shell, Ctx, Result};
 use serde::Deserialize;
@@ -748,7 +748,11 @@ fn render_table(snap: &Snapshot, color: bool) {
         .format("%Y-%m-%d %H:%M %Z");
     println!("ccs Claude usage  (fetched {header_ts})");
     println!();
-    let rows: Vec<Row> = snap.profiles.iter().map(Row::from_profile).collect();
+    let rows: Vec<Row> = snap
+        .profiles
+        .iter()
+        .map(|p| Row::from_profile(p, snap.fetched_at))
+        .collect();
     let widths = Widths::compute(&rows);
     widths.print_header();
     for row in &rows {
@@ -768,7 +772,7 @@ struct Row {
 }
 
 impl Row {
-    fn from_profile(p: &ProfileUsage) -> Self {
+    fn from_profile(p: &ProfileUsage, fetched_at: DateTime<Utc>) -> Self {
         let profile = if p.is_default {
             format!("{} *", p.name)
         } else {
@@ -779,12 +783,15 @@ impl Row {
             Some(w) => (
                 format_pct(w.used_percentage),
                 Some(w.used_percentage),
-                format_reset(w.resets_at),
+                format_reset_with_projection(w.resets_at, fetched_at, ChronoDuration::hours(5)),
             ),
             None => ("—".to_string(), None, "—".to_string()),
         };
         let (seven_used, seven_reset) = match p.seven_day {
-            Some(w) => (format_pct(w.used_percentage), format_reset(w.resets_at)),
+            Some(w) => (
+                format_pct(w.used_percentage),
+                format_reset_with_projection(w.resets_at, fetched_at, ChronoDuration::days(7)),
+            ),
             None => ("—".to_string(), "—".to_string()),
         };
         let note = match &p.error {
@@ -889,10 +896,27 @@ fn format_pct(pct: f64) -> String {
     format!("{:>3.0}%", pct)
 }
 
-fn format_reset(epoch_sec: Option<i64>) -> String {
-    let Some(epoch_sec) = epoch_sec else {
-        return "—".to_string();
-    };
+/// 窓の `resets_at` が `Some` ならそのまま絶対時刻として整形。
+/// `None` の場合 (= Anthropic 側で「直近に使用が無く 5h / 7d 窓が動いていない」)
+/// は、「もし今このプロファイルを使い始めたら次の reset はいつになるか」
+/// を `fetched_at + window` で投影して表示する。
+/// 表示文字列の先頭に `~` を付けて投影値であることを明示する。
+fn format_reset_with_projection(
+    epoch_sec: Option<i64>,
+    fetched_at: DateTime<Utc>,
+    window: ChronoDuration,
+) -> String {
+    if let Some(sec) = epoch_sec {
+        return format_epoch(sec);
+    }
+    let projected = fetched_at + window;
+    format!(
+        "~{}",
+        projected.with_timezone(&Local).format("%Y-%m-%d %H:%M")
+    )
+}
+
+fn format_epoch(epoch_sec: i64) -> String {
     match Utc.timestamp_opt(epoch_sec, 0).single() {
         Some(dt) => dt
             .with_timezone(&Local)
@@ -973,6 +997,52 @@ mod tests {
         let (five, seven) = extract_windows(&v);
         assert!(five.is_none());
         assert!(seven.is_none());
+    }
+
+    #[test]
+    fn projected_reset_when_null() {
+        // resets_at が null の窓は「fetched_at + window」を投影し、`~` 接頭辞で示す。
+        let fetched = Utc.with_ymd_and_hms(2026, 5, 20, 5, 47, 0).unwrap();
+        let s = format_reset_with_projection(None, fetched, ChronoDuration::hours(5));
+        // 5h 後 = 2026-05-20 10:47 UTC. Local 表示は環境依存なので接頭辞だけ確認。
+        assert!(s.starts_with('~'), "expected ~ prefix, got {s}");
+        assert!(s.len() > 1, "expected projected timestamp, got {s}");
+    }
+
+    #[test]
+    fn absolute_reset_when_present() {
+        // resets_at が Some の場合は接頭辞なしの絶対時刻。
+        let fetched = Utc.with_ymd_and_hms(2026, 5, 20, 5, 47, 0).unwrap();
+        let s = format_reset_with_projection(Some(1779266400), fetched, ChronoDuration::hours(5));
+        assert!(!s.starts_with('~'), "expected no ~ prefix, got {s}");
+    }
+
+    #[test]
+    fn row_projects_5h_reset_when_null() {
+        let fetched = Utc.with_ymd_and_hms(2026, 5, 20, 5, 47, 0).unwrap();
+        let p = ProfileUsage {
+            name: "c1".into(),
+            is_default: true,
+            tier: Some("max_20x".into()),
+            five_hour: Some(RateWindow {
+                used_percentage: 0.0,
+                resets_at: None,
+            }),
+            seven_day: Some(RateWindow {
+                used_percentage: 98.0,
+                resets_at: Some(1779303600),
+            }),
+            error: None,
+        };
+        let row = Row::from_profile(&p, fetched);
+        assert_eq!(row.five_used, "  0%");
+        assert!(
+            row.five_reset.starts_with('~'),
+            "5h reset should be projected when null, got {}",
+            row.five_reset
+        );
+        // 7d 側は API 値があるので接頭辞なし。
+        assert!(!row.seven_reset.starts_with('~'), "got {}", row.seven_reset);
     }
 
     #[test]
