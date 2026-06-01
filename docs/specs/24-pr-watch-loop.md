@@ -52,6 +52,9 @@ rai pr watch-loop stop <ID>
 - TUI から選択中 watcher を停止できる。
 - TUI から新しい watcher を起動できる。repo 入力、自分の open PR 一覧、複数選択、
   watcher 起動は TUI 内で完結し、外部の fzf や別画面へ遷移しない。
+- TUI の watcher 追加は、現在の GitHub repository を非同期に解決し、解決できた値を
+  `OWNER/REPO` の初期入力として使う。解決待ち中も入力欄は即座に操作でき、ユーザー入力を
+  後から上書きしない。
 - stale な pid は status/TUI 上で stopped として表示する。
 
 ## Non-goals

@@ -5,7 +5,10 @@ use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::Ordering;
+use std::sync::{
+    atomic::Ordering,
+    mpsc::{self, Receiver, TryRecvError},
+};
 use std::thread;
 use std::time::Duration;
 
@@ -967,6 +970,7 @@ fn run_tui() -> Result<()> {
     let mut app = TuiApp::default();
     loop {
         let states = load_states()?;
+        app.poll_repo_hint();
         app.clamp_selection(&states);
         draw_tui(&mut term.stdout, &states, &app)?;
         if event::poll(Duration::from_millis(1000))? {
@@ -983,15 +987,45 @@ fn run_tui() -> Result<()> {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct TuiApp {
     mode: TuiMode,
     selected: usize,
     repo_filter: Option<String>,
     message: Option<String>,
+    repo_hint_rx: Option<Receiver<RepoHintResult>>,
 }
 
 impl TuiApp {
+    fn poll_repo_hint(&mut self) {
+        let Some(rx) = self.repo_hint_rx.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(result) => self.apply_repo_hint(result),
+            Err(TryRecvError::Empty) => self.repo_hint_rx = Some(rx),
+            Err(TryRecvError::Disconnected) => {}
+        }
+    }
+
+    fn apply_repo_hint(&mut self, result: RepoHintResult) {
+        let TuiMode::RepoInput { input, message } = &mut self.mode else {
+            return;
+        };
+        if !input.is_empty() {
+            return;
+        }
+        match result {
+            Ok((owner, repo)) => {
+                *input = format!("{owner}/{repo}");
+                *message = "edit repo or press Enter to load PRs".to_string();
+            }
+            Err(e) => {
+                *message = format!("current repo not detected: {e}; enter OWNER/REPO");
+            }
+        }
+    }
+
     fn clamp_selection(&mut self, states: &[WatchState]) {
         match &self.mode {
             TuiMode::Dashboard => {
@@ -1027,6 +1061,8 @@ enum TuiMode {
     },
 }
 
+type RepoHintResult = std::result::Result<(String, String), String>;
+
 impl TuiMode {
     fn set_pr_selected(&mut self, next: usize) {
         if let Self::PrSelect { selected, .. } = self {
@@ -1045,11 +1081,15 @@ fn handle_tui_key(app: &mut TuiApp, states: &[WatchState], code: KeyCode) -> Res
         TuiMode::RepoInput { mut input, message } => {
             match code {
                 KeyCode::Esc => {
+                    app.repo_hint_rx = None;
                     app.mode = TuiMode::Dashboard;
                     app.message = Some("start cancelled".to_string());
                 }
                 KeyCode::Enter => match parse_owner_repo(input.trim()) {
-                    Ok((owner, repo)) => load_pr_picker(app, owner, repo),
+                    Ok((owner, repo)) => {
+                        app.repo_hint_rx = None;
+                        load_pr_picker(app, owner, repo);
+                    }
                     Err(e) => {
                         app.mode = TuiMode::RepoInput {
                             input,
@@ -1058,10 +1098,12 @@ fn handle_tui_key(app: &mut TuiApp, states: &[WatchState], code: KeyCode) -> Res
                     }
                 },
                 KeyCode::Backspace => {
+                    app.repo_hint_rx = None;
                     input.pop();
                     app.mode = TuiMode::RepoInput { input, message };
                 }
                 KeyCode::Char(c) => {
+                    app.repo_hint_rx = None;
                     input.push(c);
                     app.mode = TuiMode::RepoInput { input, message };
                 }
@@ -1163,15 +1205,20 @@ fn handle_dashboard_key(app: &mut TuiApp, states: &[WatchState], code: KeyCode) 
 }
 
 fn open_start_picker(app: &mut TuiApp) {
-    match resolve_repo_for_picker(None) {
-        Ok((owner, repo)) => load_pr_picker(app, owner, repo),
-        Err(e) => {
-            app.mode = TuiMode::RepoInput {
-                input: String::new(),
-                message: format!("repo not detected: {e}. enter OWNER/REPO"),
-            };
-        }
-    }
+    let (tx, rx) = mpsc::channel();
+    open_start_picker_with_repo_hint_rx(app, rx);
+    thread::spawn(move || {
+        let result = resolve_repo(None).map_err(|e| e.to_string());
+        let _ = tx.send(result);
+    });
+}
+
+fn open_start_picker_with_repo_hint_rx(app: &mut TuiApp, rx: Receiver<RepoHintResult>) {
+    app.mode = TuiMode::RepoInput {
+        input: String::new(),
+        message: "resolving current repo; enter OWNER/REPO".to_string(),
+    };
+    app.repo_hint_rx = Some(rx);
 }
 
 fn load_pr_picker(app: &mut TuiApp, owner: String, repo: String) {
@@ -1565,6 +1612,63 @@ mod tests {
         assert!(parse_owner_repo("owner").is_err());
         assert!(parse_owner_repo("owner/").is_err());
         assert!(parse_owner_repo("/repo").is_err());
+    }
+
+    #[test]
+    fn open_start_picker_enters_repo_input_before_repo_hint_resolves() {
+        let mut app = TuiApp::default();
+        let (_tx, rx) = mpsc::channel();
+        open_start_picker_with_repo_hint_rx(&mut app, rx);
+
+        match app.mode {
+            TuiMode::RepoInput { input, message } => {
+                assert_eq!(input, "");
+                assert!(message.contains("resolving current repo"));
+            }
+            other => panic!("expected repo input mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn repo_hint_prefills_empty_repo_input() {
+        let mut app = TuiApp {
+            mode: TuiMode::RepoInput {
+                input: String::new(),
+                message: "resolving current repo".to_string(),
+            },
+            ..Default::default()
+        };
+
+        app.apply_repo_hint(Ok(("owner".to_string(), "repo".to_string())));
+
+        match app.mode {
+            TuiMode::RepoInput { input, message } => {
+                assert_eq!(input, "owner/repo");
+                assert!(message.contains("Enter"));
+            }
+            other => panic!("expected repo input mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn repo_hint_does_not_overwrite_user_input() {
+        let mut app = TuiApp {
+            mode: TuiMode::RepoInput {
+                input: "typed/repo".to_string(),
+                message: "resolving current repo".to_string(),
+            },
+            ..Default::default()
+        };
+
+        app.apply_repo_hint(Ok(("owner".to_string(), "repo".to_string())));
+
+        match app.mode {
+            TuiMode::RepoInput { input, message } => {
+                assert_eq!(input, "typed/repo");
+                assert_eq!(message, "resolving current repo");
+            }
+            other => panic!("expected repo input mode, got {other:?}"),
+        }
     }
 
     #[test]
