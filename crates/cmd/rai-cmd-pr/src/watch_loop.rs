@@ -19,13 +19,14 @@ use crossterm::{
     cursor,
     event::{self, Event, KeyCode},
     execute, queue,
-    style::{Attribute, Print, SetAttribute},
+    style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
     terminal::{self, ClearType},
 };
 use rai_core::{claude::PermissionMode, cli::Run, shell, signals, Ctx, Result};
 use serde::{Deserialize, Serialize};
 
 const STATE_VERSION: u32 = 1;
+const DEFAULT_INTERVAL_SECS: u64 = 300;
 const DEFAULT_ENGINE_CMD: &str = "ccs c1 --print --output-format stream-json --verbose {PERMISSION_MODE} -- {PROMPT} | {RAI} claude format";
 
 #[derive(Debug, Args)]
@@ -74,7 +75,7 @@ struct StartCmd {
     repo: Option<String>,
 
     /// polling 間隔 (秒)。
-    #[arg(long, default_value_t = 60)]
+    #[arg(long, default_value_t = DEFAULT_INTERVAL_SECS)]
     interval: u64,
 
     /// 初回取得時点で修正対象なら agent を起動する。
@@ -139,7 +140,7 @@ struct DaemonCmd {
     #[arg(long, value_name = "OWNER/REPO")]
     repo: Option<String>,
 
-    #[arg(long, default_value_t = 60)]
+    #[arg(long, default_value_t = DEFAULT_INTERVAL_SECS)]
     interval: u64,
 
     #[arg(long)]
@@ -1166,6 +1167,11 @@ impl TuiApp {
                     self.mode.set_pr_selected(prs.len().saturating_sub(1));
                 }
             }
+            TuiMode::AgentDetail { prs, selected, .. } => {
+                if *selected >= prs.len() {
+                    self.mode.set_pr_selected(prs.len().saturating_sub(1));
+                }
+            }
             TuiMode::AgentInput { prs, selected, .. } => {
                 if *selected >= prs.len() {
                     self.mode.set_pr_selected(prs.len().saturating_sub(1));
@@ -1192,6 +1198,15 @@ enum TuiMode {
         configs: BTreeMap<usize, AgentConfig>,
         message: Option<String>,
     },
+    AgentDetail {
+        repo: String,
+        prs: Vec<PickablePr>,
+        selected: usize,
+        picked: BTreeSet<usize>,
+        configs: BTreeMap<usize, AgentConfig>,
+        detail_selected: usize,
+        message: Option<String>,
+    },
     AgentInput {
         repo: String,
         prs: Vec<PickablePr>,
@@ -1209,7 +1224,9 @@ type RepoHintResult = std::result::Result<(String, String), String>;
 impl TuiMode {
     fn set_pr_selected(&mut self, next: usize) {
         match self {
-            Self::PrSelect { selected, .. } | Self::AgentInput { selected, .. } => {
+            Self::PrSelect { selected, .. }
+            | Self::AgentDetail { selected, .. }
+            | Self::AgentInput { selected, .. } => {
                 *selected = next;
             }
             Self::Dashboard | Self::RepoInput { .. } => {}
@@ -1217,11 +1234,20 @@ impl TuiMode {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum AgentConfigField {
     PromptTemplate,
     EngineCmd,
+    PermissionMode,
+    AutoPublish,
 }
+
+const AGENT_CONFIG_FIELDS: [AgentConfigField; 4] = [
+    AgentConfigField::PromptTemplate,
+    AgentConfigField::EngineCmd,
+    AgentConfigField::PermissionMode,
+    AgentConfigField::AutoPublish,
+];
 
 fn handle_tui_key(app: &mut TuiApp, states: &[WatchState], code: KeyCode) -> Result<bool> {
     let mode = std::mem::take(&mut app.mode);
@@ -1294,53 +1320,17 @@ fn handle_tui_key(app: &mut TuiApp, states: &[WatchState], code: KeyCode) -> Res
                         picked.insert(selected);
                     }
                 }
-                KeyCode::Char('p') => {
-                    let input = configs
-                        .get(&selected)
-                        .and_then(|c| c.prompt_template.clone())
-                        .unwrap_or_default();
-                    app.mode = TuiMode::AgentInput {
+                KeyCode::Right => {
+                    app.mode = TuiMode::AgentDetail {
                         repo,
                         prs,
                         selected,
                         picked,
                         configs,
-                        field: AgentConfigField::PromptTemplate,
-                        input,
-                        message: "prompt template path (empty clears)".to_string(),
+                        detail_selected: 0,
+                        message: None,
                     };
                     return Ok(false);
-                }
-                KeyCode::Char('e') => {
-                    let input = configs
-                        .get(&selected)
-                        .map(|c| c.engine_cmd.clone())
-                        .unwrap_or_else(|| DEFAULT_ENGINE_CMD.to_string());
-                    app.mode = TuiMode::AgentInput {
-                        repo,
-                        prs,
-                        selected,
-                        picked,
-                        configs,
-                        field: AgentConfigField::EngineCmd,
-                        input,
-                        message: "engine command (empty restores default)".to_string(),
-                    };
-                    return Ok(false);
-                }
-                KeyCode::Char('m') => {
-                    let cfg = configs.entry(selected).or_default();
-                    cfg.permission_mode = next_permission_mode(cfg.permission_mode.as_deref());
-                    if cfg.is_default() {
-                        configs.remove(&selected);
-                    }
-                }
-                KeyCode::Char('a') => {
-                    let cfg = configs.entry(selected).or_default();
-                    cfg.no_auto_publish = !cfg.no_auto_publish;
-                    if cfg.is_default() {
-                        configs.remove(&selected);
-                    }
                 }
                 KeyCode::Char('c') => {
                     configs.remove(&selected);
@@ -1381,6 +1371,100 @@ fn handle_tui_key(app: &mut TuiApp, states: &[WatchState], code: KeyCode) -> Res
             };
             Ok(quit)
         }
+        TuiMode::AgentDetail {
+            repo,
+            prs,
+            selected,
+            picked,
+            mut configs,
+            mut detail_selected,
+            mut message,
+        } => {
+            match code {
+                KeyCode::Esc | KeyCode::Left => {
+                    app.mode = TuiMode::PrSelect {
+                        repo,
+                        prs,
+                        selected,
+                        picked,
+                        configs,
+                        message: None,
+                    };
+                    return Ok(false);
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    detail_selected =
+                        (detail_selected + 1).min(AGENT_CONFIG_FIELDS.len().saturating_sub(1));
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    detail_selected = detail_selected.saturating_sub(1);
+                }
+                KeyCode::Char('c') => {
+                    configs.remove(&selected);
+                    message = Some("agent options cleared".to_string());
+                }
+                KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Right => {
+                    let field = AGENT_CONFIG_FIELDS[detail_selected];
+                    match field {
+                        AgentConfigField::PromptTemplate | AgentConfigField::EngineCmd => {
+                            let input = agent_input_value(&configs, selected, field);
+                            let message = match field {
+                                AgentConfigField::PromptTemplate => {
+                                    "prompt template path (empty clears)"
+                                }
+                                AgentConfigField::EngineCmd => {
+                                    "engine command (empty restores default)"
+                                }
+                                AgentConfigField::PermissionMode
+                                | AgentConfigField::AutoPublish => {
+                                    unreachable!("text input fields only")
+                                }
+                            }
+                            .to_string();
+                            app.mode = TuiMode::AgentInput {
+                                repo,
+                                prs,
+                                selected,
+                                picked,
+                                configs,
+                                field,
+                                input,
+                                message,
+                            };
+                            return Ok(false);
+                        }
+                        AgentConfigField::PermissionMode => {
+                            let cfg = configs.entry(selected).or_default();
+                            cfg.permission_mode =
+                                next_permission_mode(cfg.permission_mode.as_deref());
+                            if cfg.is_default() {
+                                configs.remove(&selected);
+                            }
+                            message = Some("permission mode updated".to_string());
+                        }
+                        AgentConfigField::AutoPublish => {
+                            let cfg = configs.entry(selected).or_default();
+                            cfg.no_auto_publish = !cfg.no_auto_publish;
+                            if cfg.is_default() {
+                                configs.remove(&selected);
+                            }
+                            message = Some("auto-publish updated".to_string());
+                        }
+                    }
+                }
+                _ => {}
+            }
+            app.mode = TuiMode::AgentDetail {
+                repo,
+                prs,
+                selected,
+                picked,
+                configs,
+                detail_selected,
+                message,
+            };
+            Ok(false)
+        }
         TuiMode::AgentInput {
             repo,
             prs,
@@ -1393,23 +1477,25 @@ fn handle_tui_key(app: &mut TuiApp, states: &[WatchState], code: KeyCode) -> Res
         } => {
             match code {
                 KeyCode::Esc => {
-                    app.mode = TuiMode::PrSelect {
+                    app.mode = TuiMode::AgentDetail {
                         repo,
                         prs,
                         selected,
                         picked,
                         configs,
+                        detail_selected: field.index(),
                         message: Some("agent option edit cancelled".to_string()),
                     };
                 }
                 KeyCode::Enter => {
                     apply_agent_input(&mut configs, selected, &field, input.trim());
-                    app.mode = TuiMode::PrSelect {
+                    app.mode = TuiMode::AgentDetail {
                         repo,
                         prs,
                         selected,
                         picked,
                         configs,
+                        detail_selected: field.index(),
                         message: Some("agent option updated".to_string()),
                     };
                 }
@@ -1534,7 +1620,7 @@ fn start_watch_for_targets(target_configs: Vec<TargetConfig>) -> Result<()> {
     let cmd = StartCmd {
         prs,
         repo: None,
-        interval: 60,
+        interval: DEFAULT_INTERVAL_SECS,
         trigger_initial: false,
         on_any_update: false,
         foreground: false,
@@ -1590,6 +1676,7 @@ fn apply_agent_input(
                 value.to_string()
             };
         }
+        AgentConfigField::PermissionMode | AgentConfigField::AutoPublish => {}
     }
     if cfg.is_default() {
         configs.remove(&selected);
@@ -1640,6 +1727,26 @@ fn draw_tui(stdout: &mut io::Stdout, states: &[WatchState], app: &TuiApp) -> Res
             },
             (cols, rows),
         ),
+        TuiMode::AgentDetail {
+            repo,
+            prs,
+            selected,
+            configs,
+            detail_selected,
+            message,
+            ..
+        } => draw_agent_detail(
+            stdout,
+            AgentDetailView {
+                repo,
+                prs,
+                selected: *selected,
+                configs,
+                detail_selected: *detail_selected,
+                message: message.as_deref(),
+            },
+            (cols, rows),
+        ),
         TuiMode::AgentInput {
             repo,
             prs,
@@ -1668,9 +1775,11 @@ fn draw_header(stdout: &mut io::Stdout) -> Result<()> {
         stdout,
         cursor::MoveTo(0, 0),
         terminal::Clear(ClearType::All),
+        SetForegroundColor(Color::Cyan),
         SetAttribute(Attribute::Bold),
         Print("rai pr watch-loop"),
-        SetAttribute(Attribute::Reset)
+        SetAttribute(Attribute::Reset),
+        ResetColor
     )?;
     Ok(())
 }
@@ -1685,102 +1794,253 @@ fn draw_dashboard(
     draw_header(stdout)?;
     let visible = apply_repo_filter(states, app.repo_filter.as_deref());
     let filter_label = app.repo_filter.as_deref().unwrap_or("all");
-    queue!(
+    let summary = dashboard_summary(states);
+    print_summary(
         stdout,
-        cursor::MoveTo(0, 1),
-        Print(fit(
-            &format!(
-                "filter={filter_label}  s: add PR watcher  r: repo filter  x: stop watcher  j/k: select  q: quit"
-            ),
-            cols
-        ))
+        0,
+        1,
+        cols,
+        &format!(
+            "watchers={} running={} stopped={} targets={} actionable={} filter={filter_label}",
+            summary.watchers, summary.running, summary.stopped, summary.targets, summary.actionable
+        ),
     )?;
-    if let Some(message) = &app.message {
-        queue!(stdout, cursor::MoveTo(0, 2), Print(fit(message, cols)))?;
-    }
+    let status_line = app
+        .message
+        .as_deref()
+        .unwrap_or("s: add watcher  r: repo filter  x: stop selected  j/k: select  q: quit");
+    print_status(stdout, 0, 2, cols, status_line)?;
+    draw_footer(
+        stdout,
+        rows,
+        cols,
+        "Dashboard: j/k move | s add | r filter repo | x stop | q quit",
+    )?;
     if visible.is_empty() {
-        queue!(stdout, cursor::MoveTo(0, 3), Print("no watch-loop daemons"))?;
+        print_muted(stdout, 0, 4, cols, "no watch-loop daemons")?;
         stdout.flush()?;
         return Ok(());
     }
 
-    let mut row = 3u16;
-    for (idx, state) in visible.iter().enumerate() {
-        if row >= rows {
-            break;
+    let top = 4;
+    let bottom = rows.saturating_sub(2);
+    if top >= bottom {
+        stdout.flush()?;
+        return Ok(());
+    }
+    if cols >= 100 {
+        let list_width = cols.saturating_mul(48) / 100;
+        let detail_x = list_width.saturating_add(2);
+        let detail_width = cols.saturating_sub(detail_x);
+        draw_watcher_list(stdout, &visible, app.selected, 0, top, list_width, bottom)?;
+        if let Some(state) = visible.get(app.selected) {
+            draw_watcher_detail(stdout, state, detail_x, top, detail_width, bottom)?;
         }
-        let marker = if idx == app.selected { "> " } else { "  " };
-        let status = if pid_alive(state.pid) {
-            "running"
-        } else {
-            "stopped"
-        };
-        if idx == app.selected {
-            queue!(stdout, SetAttribute(Attribute::Reverse))?;
-        }
-        queue!(
-            stdout,
-            cursor::MoveTo(0, row),
-            Print(fit(
-                &format!(
-                    "{marker}{} pid={} {} every={}s targets={} last_poll={} last_spawn={} err={}",
-                    state.id,
-                    state.pid,
-                    status,
-                    state.interval_secs,
-                    state.targets.len(),
-                    state.last_poll_at.as_deref().unwrap_or("-"),
-                    state.last_spawn_at.as_deref().unwrap_or("-"),
-                    state.last_error.as_deref().unwrap_or("-")
-                ),
-                cols
-            )),
-            SetAttribute(Attribute::Reset)
-        )?;
-        row += 1;
-        for target in &state.targets {
-            if row >= rows {
-                break;
-            }
-            queue!(
-                stdout,
-                cursor::MoveTo(2, row),
-                Print(fit(
-                    &format!(
-                        "#{} {}/{} {} action={} seen={} spawn={}",
-                        target.number,
-                        target.owner,
-                        target.repo,
-                        target.title.as_deref().unwrap_or(""),
-                        target.last_actionable.as_deref().unwrap_or("-"),
-                        target.last_seen_at.as_deref().unwrap_or("-"),
-                        target.last_spawn_at.as_deref().unwrap_or("-")
-                    ),
-                    cols.saturating_sub(2)
-                ))
-            )?;
-            row += 1;
+    } else {
+        let split = top + (bottom - top) / 2;
+        draw_watcher_list(stdout, &visible, app.selected, 0, top, cols, split)?;
+        if let Some(state) = visible.get(app.selected) {
+            draw_watcher_detail(stdout, state, 0, split.saturating_add(1), cols, bottom)?;
         }
     }
     stdout.flush()?;
+    Ok(())
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct DashboardSummary {
+    watchers: usize,
+    running: usize,
+    stopped: usize,
+    targets: usize,
+    actionable: usize,
+}
+
+fn dashboard_summary(states: &[WatchState]) -> DashboardSummary {
+    let watchers = states.len();
+    let running = states
+        .iter()
+        .filter(|state| watcher_status(state) == "running")
+        .count();
+    DashboardSummary {
+        watchers,
+        running,
+        stopped: watchers.saturating_sub(running),
+        targets: states.iter().map(|state| state.targets.len()).sum(),
+        actionable: states
+            .iter()
+            .flat_map(|state| &state.targets)
+            .filter(|target| target.last_actionable.is_some())
+            .count(),
+    }
+}
+
+fn watcher_status(state: &WatchState) -> &'static str {
+    if state.stopping {
+        "stopping"
+    } else if pid_alive(state.pid) {
+        "running"
+    } else {
+        "stopped"
+    }
+}
+
+fn watcher_status_color(state: &WatchState) -> Color {
+    match watcher_status(state) {
+        "running" => Color::Green,
+        "stopping" => Color::Yellow,
+        _ => Color::DarkGrey,
+    }
+}
+
+fn draw_watcher_list(
+    stdout: &mut io::Stdout,
+    states: &[WatchState],
+    selected: usize,
+    x: u16,
+    top: u16,
+    width: u16,
+    bottom: u16,
+) -> Result<()> {
+    print_heading(stdout, x, top, width, "Watchers")?;
+    let mut row = top.saturating_add(1);
+    for (idx, state) in states.iter().enumerate() {
+        if row > bottom {
+            break;
+        }
+        let marker = if idx == selected { "> " } else { "  " };
+        let err = if state.last_error.is_some() {
+            " err"
+        } else {
+            ""
+        };
+        let actionable = state
+            .targets
+            .iter()
+            .filter(|target| target.last_actionable.is_some())
+            .count();
+        if idx == selected {
+            queue!(stdout, SetAttribute(Attribute::Reverse))?;
+        } else {
+            queue!(stdout, SetForegroundColor(watcher_status_color(state)))?;
+        }
+        print_at(
+            stdout,
+            x,
+            row,
+            width,
+            &format!(
+                "{marker}{} {} pid={} prs={} actionable={} every={}s{}",
+                state.id,
+                watcher_status(state),
+                state.pid,
+                state.targets.len(),
+                actionable,
+                state.interval_secs,
+                err
+            ),
+        )?;
+        queue!(stdout, SetAttribute(Attribute::Reset), ResetColor)?;
+        row = row.saturating_add(1);
+    }
+    Ok(())
+}
+
+fn draw_watcher_detail(
+    stdout: &mut io::Stdout,
+    state: &WatchState,
+    x: u16,
+    top: u16,
+    width: u16,
+    bottom: u16,
+) -> Result<()> {
+    print_heading(stdout, x, top, width, "Selected watcher")?;
+    let mut row = top.saturating_add(1);
+    for line in [
+        format!("id: {}", state.id),
+        format!("status: {}  pid: {}", watcher_status(state), state.pid),
+        format!("started: {}", state.started_at),
+        format!(
+            "last poll: {}",
+            state.last_poll_at.as_deref().unwrap_or("-")
+        ),
+        format!(
+            "last spawn: {}",
+            state.last_spawn_at.as_deref().unwrap_or("-")
+        ),
+        format!("error: {}", state.last_error.as_deref().unwrap_or("-")),
+    ] {
+        if row > bottom {
+            return Ok(());
+        }
+        print_at(stdout, x, row, width, &line)?;
+        row = row.saturating_add(1);
+    }
+    if row <= bottom {
+        print_heading(stdout, x, row, width, "Targets")?;
+        row = row.saturating_add(1);
+    }
+    for target in &state.targets {
+        if row > bottom {
+            break;
+        }
+        print_at(
+            stdout,
+            x,
+            row,
+            width,
+            &format!(
+                "#{} {}/{} {}",
+                target.number,
+                target.owner,
+                target.repo,
+                target.title.as_deref().unwrap_or("")
+            ),
+        )?;
+        row = row.saturating_add(1);
+        if row > bottom {
+            break;
+        }
+        print_at(
+            stdout,
+            x.saturating_add(2),
+            row,
+            width.saturating_sub(2),
+            &format!(
+                "action={} seen={} spawn={} agent={}",
+                target.last_actionable.as_deref().unwrap_or("-"),
+                target.last_seen_at.as_deref().unwrap_or("-"),
+                target.last_spawn_at.as_deref().unwrap_or("-"),
+                agent_config_label(&target.agent)
+            ),
+        )?;
+        row = row.saturating_add(1);
+    }
     Ok(())
 }
 
 fn draw_repo_input(stdout: &mut io::Stdout, input: &str, message: &str, cols: u16) -> Result<()> {
     draw_header(stdout)?;
-    queue!(
+    print_summary(
         stdout,
-        cursor::MoveTo(0, 1),
-        Print("add PR watcher: enter OWNER/REPO, Enter: load PRs, Esc: cancel"),
-        cursor::MoveTo(0, 3),
-        Print(fit(message, cols)),
-        cursor::MoveTo(0, 5),
-        Print(fit(&format!("OWNER/REPO: {input}"), cols))
+        0,
+        1,
+        cols,
+        "add PR watcher: enter OWNER/REPO, Enter: load PRs, Esc: cancel",
+    )?;
+    print_status(stdout, 0, 3, cols, message)?;
+    print_at(stdout, 0, 5, cols, &format!("OWNER/REPO: {input}"))?;
+    draw_footer(
+        stdout,
+        terminal::size()?.1,
+        cols,
+        "Add watcher: type OWNER/REPO | Enter load PRs | Esc cancel",
     )?;
     stdout.flush()?;
     Ok(())
 }
 
+#[derive(Clone, Copy)]
 struct PrSelectView<'a> {
     repo: &'a str,
     prs: &'a [PickablePr],
@@ -1793,24 +2053,69 @@ struct PrSelectView<'a> {
 fn draw_pr_select(stdout: &mut io::Stdout, view: PrSelectView<'_>, size: (u16, u16)) -> Result<()> {
     let (cols, rows) = size;
     draw_header(stdout)?;
-    queue!(
+    print_summary(
         stdout,
-        cursor::MoveTo(0, 1),
-        Print(fit(
-            &format!("{}  Space: select  p: prompt  e: engine  m: mode  a: auto-publish  c: clear  Enter: start  Esc: back", view.repo),
-            cols
-        ))
+        0,
+        1,
+        cols,
+        &format!(
+            "{}  open PRs={} selected={}",
+            view.repo,
+            view.prs.len(),
+            view.picked.len()
+        ),
     )?;
-    if let Some(message) = view.message {
-        queue!(stdout, cursor::MoveTo(0, 2), Print(fit(message, cols)))?;
-    }
+    let status_line = view
+        .message
+        .unwrap_or("Space: select  Right: PR settings  c: clear settings  Enter: start");
+    print_status(stdout, 0, 2, cols, status_line)?;
+    draw_footer(
+        stdout,
+        rows,
+        cols,
+        "PR picker: j/k move | Space select | Right settings | c clear settings | Enter start | Esc back",
+    )?;
     if view.prs.is_empty() {
-        queue!(stdout, cursor::MoveTo(0, 4), Print("no open PRs"))?;
+        print_muted(stdout, 0, 4, cols, "no open PRs")?;
         stdout.flush()?;
         return Ok(());
     }
-    for (row, (idx, pr)) in (4u16..).zip(view.prs.iter().enumerate()) {
-        if row >= rows {
+
+    let top = 4;
+    let bottom = rows.saturating_sub(2);
+    if cols >= 100 {
+        let list_width = cols.saturating_mul(55) / 100;
+        let detail_x = list_width.saturating_add(2);
+        draw_pr_rows(stdout, view, 0, top, list_width, bottom)?;
+        draw_selected_pr_detail(
+            stdout,
+            view,
+            detail_x,
+            top,
+            cols.saturating_sub(detail_x),
+            bottom,
+        )?;
+    } else {
+        let split = top + (bottom.saturating_sub(top)) / 2;
+        draw_pr_rows(stdout, view, 0, top, cols, split)?;
+        draw_selected_pr_detail(stdout, view, 0, split.saturating_add(1), cols, bottom)?;
+    }
+    stdout.flush()?;
+    Ok(())
+}
+
+fn draw_pr_rows(
+    stdout: &mut io::Stdout,
+    view: PrSelectView<'_>,
+    x: u16,
+    top: u16,
+    width: u16,
+    bottom: u16,
+) -> Result<()> {
+    print_heading(stdout, x, top, width, "Pull requests")?;
+    let mut row = top.saturating_add(1);
+    for (idx, pr) in view.prs.iter().enumerate() {
+        if row > bottom {
             break;
         }
         let cursor = if idx == view.selected { "> " } else { "  " };
@@ -1823,21 +2128,215 @@ fn draw_pr_select(stdout: &mut io::Stdout, view: PrSelectView<'_>, size: (u16, u
         let agent_label = agent_config_label(&agent);
         if idx == view.selected {
             queue!(stdout, SetAttribute(Attribute::Reverse))?;
+        } else if view.picked.contains(&idx) {
+            queue!(stdout, SetForegroundColor(Color::Green))?;
+        } else {
+            queue!(stdout, SetForegroundColor(Color::White))?;
         }
-        queue!(
+        print_at(
             stdout,
-            cursor::MoveTo(0, row),
-            Print(fit(
-                &format!(
-                    "{cursor}{mark} #{} {} {} updated={} {}",
-                    pr.number, pr.title, pr.head_ref, pr.updated_at, agent_label
-                ),
-                cols
-            )),
-            SetAttribute(Attribute::Reset)
+            x,
+            row,
+            width,
+            &format!(
+                "{cursor}{mark} #{} | {} | branch={} | updated={} | {}",
+                pr.number, pr.title, pr.head_ref, pr.updated_at, agent_label
+            ),
+        )?;
+        queue!(stdout, SetAttribute(Attribute::Reset), ResetColor)?;
+        row = row.saturating_add(1);
+    }
+    Ok(())
+}
+
+fn draw_selected_pr_detail(
+    stdout: &mut io::Stdout,
+    view: PrSelectView<'_>,
+    x: u16,
+    top: u16,
+    width: u16,
+    bottom: u16,
+) -> Result<()> {
+    print_heading(stdout, x, top, width, "Selected PR")?;
+    let Some(pr) = view.prs.get(view.selected) else {
+        return Ok(());
+    };
+    let agent = view
+        .configs
+        .get(&view.selected)
+        .cloned()
+        .unwrap_or_default();
+    let rows = [
+        format!("#{} {}", pr.number, pr.title),
+        format!("branch: {}", pr.head_ref),
+        format!("updated: {}", pr.updated_at),
+        format!("url: {}", pr.url),
+        "settings: press Right to edit".to_string(),
+        format!(
+            "prompt-template: {}",
+            agent.prompt_template.as_deref().unwrap_or("-")
+        ),
+        format!(
+            "permission-mode: {}",
+            agent.permission_mode.as_deref().unwrap_or("-")
+        ),
+        format!(
+            "auto-publish: {}",
+            if agent.no_auto_publish { "off" } else { "on" }
+        ),
+        format!(
+            "engine: {}",
+            if agent.engine_cmd == DEFAULT_ENGINE_CMD {
+                "default"
+            } else {
+                agent.engine_cmd.as_str()
+            }
+        ),
+    ];
+    for (offset, line) in rows.into_iter().enumerate() {
+        let row = top.saturating_add(1 + offset as u16);
+        if row > bottom {
+            break;
+        }
+        print_at(stdout, x, row, width, &line)?;
+    }
+    Ok(())
+}
+
+struct AgentDetailView<'a> {
+    repo: &'a str,
+    prs: &'a [PickablePr],
+    selected: usize,
+    configs: &'a BTreeMap<usize, AgentConfig>,
+    detail_selected: usize,
+    message: Option<&'a str>,
+}
+
+fn draw_agent_detail(
+    stdout: &mut io::Stdout,
+    view: AgentDetailView<'_>,
+    size: (u16, u16),
+) -> Result<()> {
+    let (cols, rows) = size;
+    draw_header(stdout)?;
+    let pr_label = view
+        .prs
+        .get(view.selected)
+        .map(|pr| format!("#{} {}", pr.number, pr.title))
+        .unwrap_or_else(|| "<unknown PR>".to_string());
+    print_summary(stdout, 0, 1, cols, &format!("{}  {pr_label}", view.repo))?;
+    let status_line = view
+        .message
+        .unwrap_or("j/k: choose setting  Enter/Right: edit or toggle  c: clear  Left/Esc: back");
+    print_status(stdout, 0, 2, cols, status_line)?;
+    draw_footer(
+        stdout,
+        rows,
+        cols,
+        "PR settings: j/k move | Enter/Right edit or toggle | c clear all | Left/Esc back",
+    )?;
+
+    let Some(pr) = view.prs.get(view.selected) else {
+        stdout.flush()?;
+        return Ok(());
+    };
+    let agent = view
+        .configs
+        .get(&view.selected)
+        .cloned()
+        .unwrap_or_default();
+    let top = 4;
+    let bottom = rows.saturating_sub(2);
+    if cols >= 100 {
+        let info_width = cols.saturating_mul(45) / 100;
+        draw_pr_info(stdout, pr, 0, top, info_width, bottom)?;
+        draw_agent_settings(
+            stdout,
+            &agent,
+            view.detail_selected,
+            info_width.saturating_add(2),
+            top,
+            cols.saturating_sub(info_width.saturating_add(2)),
+            bottom,
+        )?;
+    } else {
+        let split = top + (bottom.saturating_sub(top)) / 2;
+        draw_pr_info(stdout, pr, 0, top, cols, split)?;
+        draw_agent_settings(
+            stdout,
+            &agent,
+            view.detail_selected,
+            0,
+            split.saturating_add(1),
+            cols,
+            bottom,
         )?;
     }
     stdout.flush()?;
+    Ok(())
+}
+
+fn draw_pr_info(
+    stdout: &mut io::Stdout,
+    pr: &PickablePr,
+    x: u16,
+    top: u16,
+    width: u16,
+    bottom: u16,
+) -> Result<()> {
+    print_heading(stdout, x, top, width, "Pull request")?;
+    for (offset, line) in [
+        format!("#{} {}", pr.number, pr.title),
+        format!("branch: {}", pr.head_ref),
+        format!("updated: {}", pr.updated_at),
+        format!("url: {}", pr.url),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let row = top.saturating_add(1 + offset as u16);
+        if row > bottom {
+            break;
+        }
+        print_at(stdout, x, row, width, &line)?;
+    }
+    Ok(())
+}
+
+fn draw_agent_settings(
+    stdout: &mut io::Stdout,
+    agent: &AgentConfig,
+    selected: usize,
+    x: u16,
+    top: u16,
+    width: u16,
+    bottom: u16,
+) -> Result<()> {
+    print_heading(stdout, x, top, width, "Agent settings")?;
+    for (idx, field) in AGENT_CONFIG_FIELDS.iter().enumerate() {
+        let row = top.saturating_add(1 + idx as u16);
+        if row > bottom {
+            break;
+        }
+        let marker = if idx == selected { "> " } else { "  " };
+        if idx == selected {
+            queue!(stdout, SetAttribute(Attribute::Reverse))?;
+        } else {
+            queue!(stdout, SetForegroundColor(field_color(*field)))?;
+        }
+        print_at(
+            stdout,
+            x,
+            row,
+            width,
+            &format!(
+                "{marker}{}: {}",
+                field.label(),
+                agent_field_value(agent, *field)
+            ),
+        )?;
+        queue!(stdout, SetAttribute(Attribute::Reset), ResetColor)?;
+    }
     Ok(())
 }
 
@@ -1878,19 +2377,23 @@ fn draw_agent_input(stdout: &mut io::Stdout, view: AgentInputView<'_>, cols: u16
         .get(view.selected)
         .map(|pr| format!("#{} {}", pr.number, pr.title))
         .unwrap_or_else(|| "<unknown PR>".to_string());
-    queue!(
+    print_summary(stdout, 0, 1, cols, &format!("{}  {pr_label}", view.repo))?;
+    print_status(stdout, 0, 3, cols, view.message)?;
+    queue!(stdout, SetForegroundColor(field_color(*view.field)))?;
+    print_at(
         stdout,
-        cursor::MoveTo(0, 1),
-        Print(fit(&format!("{}  {pr_label}", view.repo), cols)),
-        cursor::MoveTo(0, 3),
-        Print(fit(view.message, cols)),
-        cursor::MoveTo(0, 5),
-        Print(fit(
-            &format!("{}: {}", view.field.label(), view.input),
-            cols
-        )),
-        cursor::MoveTo(0, 7),
-        Print("Enter: apply  Esc: cancel")
+        0,
+        5,
+        cols,
+        &format!("{}: {}", view.field.label(), view.input),
+    )?;
+    queue!(stdout, ResetColor)?;
+    print_muted(stdout, 0, 7, cols, "Enter: apply  Esc: cancel")?;
+    draw_footer(
+        stdout,
+        terminal::size()?.1,
+        cols,
+        "Agent option: type value | Backspace delete | Enter apply | Esc cancel",
     )?;
     stdout.flush()?;
     Ok(())
@@ -1901,7 +2404,67 @@ impl AgentConfigField {
         match self {
             Self::PromptTemplate => "prompt-template",
             Self::EngineCmd => "engine-cmd",
+            Self::PermissionMode => "permission-mode",
+            Self::AutoPublish => "auto-publish",
         }
+    }
+
+    fn index(&self) -> usize {
+        match self {
+            Self::PromptTemplate => 0,
+            Self::EngineCmd => 1,
+            Self::PermissionMode => 2,
+            Self::AutoPublish => 3,
+        }
+    }
+}
+
+fn field_color(field: AgentConfigField) -> Color {
+    match field {
+        AgentConfigField::PromptTemplate => Color::Magenta,
+        AgentConfigField::EngineCmd => Color::Blue,
+        AgentConfigField::PermissionMode => Color::Yellow,
+        AgentConfigField::AutoPublish => Color::Green,
+    }
+}
+
+fn agent_field_value(agent: &AgentConfig, field: AgentConfigField) -> String {
+    match field {
+        AgentConfigField::PromptTemplate => agent
+            .prompt_template
+            .clone()
+            .unwrap_or_else(|| "-".to_string()),
+        AgentConfigField::EngineCmd => {
+            if agent.engine_cmd == DEFAULT_ENGINE_CMD {
+                "default".to_string()
+            } else {
+                agent.engine_cmd.clone()
+            }
+        }
+        AgentConfigField::PermissionMode => agent
+            .permission_mode
+            .clone()
+            .unwrap_or_else(|| "-".to_string()),
+        AgentConfigField::AutoPublish => {
+            if agent.no_auto_publish {
+                "off".to_string()
+            } else {
+                "on".to_string()
+            }
+        }
+    }
+}
+
+fn agent_input_value(
+    configs: &BTreeMap<usize, AgentConfig>,
+    selected: usize,
+    field: AgentConfigField,
+) -> String {
+    let agent = configs.get(&selected).cloned().unwrap_or_default();
+    match field {
+        AgentConfigField::PromptTemplate => agent.prompt_template.unwrap_or_default(),
+        AgentConfigField::EngineCmd => agent.engine_cmd,
+        AgentConfigField::PermissionMode | AgentConfigField::AutoPublish => String::new(),
     }
 }
 
@@ -1916,6 +2479,59 @@ fn fit(s: &str, cols: u16) -> String {
     let mut out: String = s.chars().take(max - 1).collect();
     out.push('…');
     out
+}
+
+fn print_at(stdout: &mut io::Stdout, x: u16, row: u16, width: u16, text: &str) -> Result<()> {
+    queue!(stdout, cursor::MoveTo(x, row), Print(fit(text, width)))?;
+    Ok(())
+}
+
+fn print_heading(stdout: &mut io::Stdout, x: u16, row: u16, width: u16, text: &str) -> Result<()> {
+    queue!(
+        stdout,
+        SetForegroundColor(Color::Cyan),
+        SetAttribute(Attribute::Bold)
+    )?;
+    print_at(stdout, x, row, width, text)?;
+    queue!(stdout, SetAttribute(Attribute::Reset), ResetColor)?;
+    Ok(())
+}
+
+fn print_summary(stdout: &mut io::Stdout, x: u16, row: u16, width: u16, text: &str) -> Result<()> {
+    queue!(stdout, SetForegroundColor(Color::Yellow))?;
+    print_at(stdout, x, row, width, text)?;
+    queue!(stdout, ResetColor)?;
+    Ok(())
+}
+
+fn print_status(stdout: &mut io::Stdout, x: u16, row: u16, width: u16, text: &str) -> Result<()> {
+    queue!(stdout, SetForegroundColor(Color::DarkCyan))?;
+    print_at(stdout, x, row, width, text)?;
+    queue!(stdout, ResetColor)?;
+    Ok(())
+}
+
+fn print_muted(stdout: &mut io::Stdout, x: u16, row: u16, width: u16, text: &str) -> Result<()> {
+    queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
+    print_at(stdout, x, row, width, text)?;
+    queue!(stdout, ResetColor)?;
+    Ok(())
+}
+
+fn draw_footer(stdout: &mut io::Stdout, rows: u16, cols: u16, text: &str) -> Result<()> {
+    if rows == 0 {
+        return Ok(());
+    }
+    queue!(
+        stdout,
+        cursor::MoveTo(0, rows.saturating_sub(1)),
+        SetForegroundColor(Color::DarkGrey),
+        SetAttribute(Attribute::Dim),
+        Print(fit(text, cols)),
+        SetAttribute(Attribute::Reset),
+        ResetColor
+    )?;
+    Ok(())
 }
 
 fn stop_by_id(id: &str) -> Result<()> {
@@ -2237,7 +2853,7 @@ mod tests {
     }
 
     #[test]
-    fn pr_select_key_toggles_per_pr_options() {
+    fn agent_detail_toggles_per_pr_options() {
         let mut app = TuiApp {
             mode: TuiMode::PrSelect {
                 repo: "o/r".to_string(),
@@ -2256,11 +2872,15 @@ mod tests {
             ..Default::default()
         };
 
-        handle_tui_key(&mut app, &[], KeyCode::Char('m')).unwrap();
-        handle_tui_key(&mut app, &[], KeyCode::Char('a')).unwrap();
+        handle_tui_key(&mut app, &[], KeyCode::Right).unwrap();
+        handle_tui_key(&mut app, &[], KeyCode::Down).unwrap();
+        handle_tui_key(&mut app, &[], KeyCode::Down).unwrap();
+        handle_tui_key(&mut app, &[], KeyCode::Enter).unwrap();
+        handle_tui_key(&mut app, &[], KeyCode::Down).unwrap();
+        handle_tui_key(&mut app, &[], KeyCode::Enter).unwrap();
 
-        let TuiMode::PrSelect { configs, .. } = app.mode else {
-            panic!("expected PR select mode");
+        let TuiMode::AgentDetail { configs, .. } = app.mode else {
+            panic!("expected agent detail mode");
         };
         let cfg = configs.get(&0).expect("selected PR config");
         assert_eq!(cfg.permission_mode.as_deref(), Some("acceptEdits"));
@@ -2268,7 +2888,7 @@ mod tests {
     }
 
     #[test]
-    fn pr_select_key_opens_prompt_template_input() {
+    fn pr_select_right_opens_detail_and_enter_opens_prompt_template_input() {
         let mut app = TuiApp {
             mode: TuiMode::PrSelect {
                 repo: "o/r".to_string(),
@@ -2287,7 +2907,9 @@ mod tests {
             ..Default::default()
         };
 
-        handle_tui_key(&mut app, &[], KeyCode::Char('p')).unwrap();
+        handle_tui_key(&mut app, &[], KeyCode::Right).unwrap();
+        assert!(matches!(app.mode, TuiMode::AgentDetail { .. }));
+        handle_tui_key(&mut app, &[], KeyCode::Enter).unwrap();
 
         let TuiMode::AgentInput { field, input, .. } = app.mode else {
             panic!("expected agent input mode");

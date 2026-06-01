@@ -26,7 +26,7 @@ rai pr watch-loop stop <ID>
 - 対象 repo は、git repository 内では現在の GitHub repository を使う。git repository
   外では `OWNER/REPO` を対話入力してもらう。非TTYでは `--repo` を必須にする。
 - `start` は既定で daemon 化して即座に戻る。`--foreground` で前面実行できる。
-- `--interval SECS` で polling 間隔を指定する。
+- `--interval SECS` で polling 間隔を指定する。既定は 300 秒 (5 分)。
 - `--trigger-initial` を指定した場合、初回取得時点で修正対象の PR も agent 起動対象にする。
 - `--on-any-update` を指定した場合、CI 失敗や conflict に限らず PR fingerprint 変化で agent
   を起動する。
@@ -50,9 +50,18 @@ rai pr watch-loop stop <ID>
 
 - watcher は state directory に JSON state を定期保存する。
 - TUI は state file を読み、watcher ID、pid、対象 PR、最終 poll、最終 agent 起動、最終エラーを表示する。
+- TUI dashboard は稼働数、停止数、対象 PR 数、actionable PR 数を要約し、watcher 一覧と
+  選択中 watcher の詳細を同時に確認できる。
+- TUI はヘッダー、サマリー、見出し、状態、選択行、設定項目、footer を色分けし、常に
+  利用可能なキー操作を footer に表示する。狭い端末では内容を切り詰めて崩れない。
 - TUI から選択中 watcher を停止できる。
 - TUI から新しい watcher を起動できる。repo 入力、自分の open PR 一覧、複数選択、
   watcher 起動は TUI 内で完結し、外部の fzf や別画面へ遷移しない。
+- TUI の PR 選択画面は選択数、PR 一覧、選択中 PR の概要を同時に表示する。
+- TUI の PR 一覧は PR 番号、title、head branch、更新時刻、agent 設定を区切り文字や
+  label で明確に分けて表示する。
+- TUI の PR 選択画面から右矢印で選択中 PR の詳細設定画面に入り、その画面内で
+  `rai develop pr` に渡す agent 設定を編集できる。左矢印または Esc で一覧へ戻る。
 - TUI の PR 一覧では、PR ごとに `rai develop pr` へ渡す `--engine-cmd`、
   `--prompt-template`、`--permission-mode`、`--no-auto-publish` を設定できる。
   設定は watcher state に PR 単位で保存され、該当 PR の agent 起動時だけ適用される。
