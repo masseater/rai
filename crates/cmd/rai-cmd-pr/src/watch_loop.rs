@@ -2560,10 +2560,9 @@ fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
-    shell::user_shell_argv(&["kill", "-0", &pid.to_string()])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    let mut cmd = shell::user_shell_argv(&["kill", "-0", &pid.to_string()]);
+    cmd.stderr(Stdio::null());
+    cmd.status().map(|s| s.success()).unwrap_or(false)
 }
 
 fn save_state(state: &WatchState) -> Result<()> {

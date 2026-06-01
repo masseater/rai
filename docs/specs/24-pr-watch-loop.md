@@ -70,7 +70,8 @@ rai pr watch-loop stop <ID>
 - TUI の watcher 追加は、現在の GitHub repository を非同期に解決し、解決できた値を
   `OWNER/REPO` の初期入力として使う。解決待ち中も入力欄は即座に操作でき、ユーザー入力を
   後から上書きしない。
-- stale な pid は status/TUI 上で stopped として表示する。
+- stale な pid は status/TUI 上で stopped として表示し、liveness check のために呼んだ
+  外部コマンドの stderr を画面に漏らさない。
 
 ## Non-goals
 
