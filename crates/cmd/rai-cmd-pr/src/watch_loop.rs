@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
     atomic::Ordering,
@@ -1103,11 +1103,10 @@ fn run_tui() -> Result<()> {
         draw_tui(&mut term.stdout, &states, &app)?;
         if event::poll(Duration::from_millis(1000))? {
             match event::read()? {
-                Event::Key(key) => {
-                    if handle_tui_key(&mut app, &states, key.code)? {
-                        return Ok(());
-                    }
+                Event::Key(key) if handle_tui_key(&mut app, &states, key.code)? => {
+                    return Ok(());
                 }
+                Event::Key(_) => {}
                 Event::Resize(_, _) => {}
                 _ => {}
             }
@@ -2582,7 +2581,7 @@ fn load_states() -> Result<Vec<WatchState>> {
     for entry in fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+        if !is_watch_state_file(&path) {
             continue;
         }
         let body = fs::read_to_string(&path)
@@ -2594,6 +2593,13 @@ fn load_states() -> Result<Vec<WatchState>> {
     }
     states.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(states)
+}
+
+fn is_watch_state_file(path: &Path) -> bool {
+    let Some(filename) = path.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    filename.ends_with(".json") && !filename.ends_with(".targets.json")
 }
 
 fn state_path(id: &str) -> Result<PathBuf> {
@@ -2819,6 +2825,15 @@ mod tests {
         assert_eq!(got[1].agent.engine_cmd, "agent -- {PROMPT}");
         assert!(got[1].agent.no_auto_publish);
         assert_eq!(got[1].agent.permission_mode.as_deref(), Some("plan"));
+    }
+
+    #[test]
+    fn watch_state_file_filter_ignores_target_config_json() {
+        assert!(is_watch_state_file(Path::new("20260601-135217-69786.json")));
+        assert!(!is_watch_state_file(Path::new(
+            "20260601-135217-69786.targets.json"
+        )));
+        assert!(!is_watch_state_file(Path::new("20260601-135217-69786.log")));
     }
 
     #[test]

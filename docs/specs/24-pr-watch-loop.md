@@ -49,6 +49,8 @@ rai pr watch-loop stop <ID>
 ## State / TUI
 
 - watcher は state directory に JSON state を定期保存する。
+- state directory に watcher 起動用の補助 JSON があっても、status/TUI はそれを
+  watcher state として扱わず、警告を出さない。
 - TUI は state file を読み、watcher ID、pid、対象 PR、最終 poll、最終 agent 起動、最終エラーを表示する。
 - TUI dashboard は稼働数、停止数、対象 PR 数、actionable PR 数を要約し、watcher 一覧と
   選択中 watcher の詳細を同時に確認できる。
