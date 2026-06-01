@@ -1400,8 +1400,7 @@ fn draw_pr_select(
         stdout.flush()?;
         return Ok(());
     }
-    let mut row = 4u16;
-    for (idx, pr) in prs.iter().enumerate() {
+    for (row, (idx, pr)) in (4u16..).zip(prs.iter().enumerate()) {
         if row >= rows {
             break;
         }
@@ -1422,7 +1421,6 @@ fn draw_pr_select(
             )),
             SetAttribute(Attribute::Reset)
         )?;
-        row += 1;
     }
     stdout.flush()?;
     Ok(())
