@@ -75,6 +75,13 @@ cargo run -p rai -- <subcommand> [args]
 
 > Development commands last updated: 2026-04-28
 
+## Interactive Shell Verification
+
+- Features that require an interactive shell or terminal UI (for example TUI,
+  raw-mode key handling, `fzf`, or foreground agent sessions) must be verified
+  inside `tmux`. Do not treat a non-interactive command or unit test alone as
+  sufficient for those flows.
+
 ## Adding a Subcommand
 
 1. Write the spec first under `docs/specs/NN-<name>.md`.

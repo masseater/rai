@@ -30,7 +30,8 @@ rai pr watch-loop stop <ID>
 - `--trigger-initial` を指定した場合、初回取得時点で修正対象の PR も agent 起動対象にする。
 - `--on-any-update` を指定した場合、CI 失敗や conflict に限らず PR fingerprint 変化で agent
   を起動する。
-- `--engine-cmd` / `--permission-mode` / `--no-auto-publish` は `rai develop pr` に渡す。
+- `--engine-cmd` / `--prompt-template` / `--permission-mode` / `--no-auto-publish` は
+  `rai develop pr` に渡す。
 
 ## Watch Behavior
 
@@ -52,6 +53,9 @@ rai pr watch-loop stop <ID>
 - TUI から選択中 watcher を停止できる。
 - TUI から新しい watcher を起動できる。repo 入力、自分の open PR 一覧、複数選択、
   watcher 起動は TUI 内で完結し、外部の fzf や別画面へ遷移しない。
+- TUI の PR 一覧では、PR ごとに `rai develop pr` へ渡す `--engine-cmd`、
+  `--prompt-template`、`--permission-mode`、`--no-auto-publish` を設定できる。
+  設定は watcher state に PR 単位で保存され、該当 PR の agent 起動時だけ適用される。
 - TUI の watcher 追加は、現在の GitHub repository を非同期に解決し、解決できた値を
   `OWNER/REPO` の初期入力として使う。解決待ち中も入力欄は即座に操作でき、ユーザー入力を
   後から上書きしない。

@@ -93,6 +93,10 @@ struct StartCmd {
     #[arg(long, short = 'e', value_name = "CMD", default_value = DEFAULT_ENGINE_CMD)]
     engine_cmd: String,
 
+    /// prompt template を `rai develop pr` へ渡す。
+    #[arg(long, value_name = "FILE")]
+    prompt_template: Option<PathBuf>,
+
     /// agent 終了後の自動 commit / push を無効化する。
     #[arg(long)]
     no_auto_publish: bool,
@@ -100,6 +104,14 @@ struct StartCmd {
     /// agent (`claude`) に渡す `--permission-mode` を明示する。
     #[arg(long, value_name = "MODE", value_enum)]
     permission_mode: Option<PermissionMode>,
+
+    /// TUI から起動する PR ごとの設定。通常 CLI では使わない。
+    #[arg(skip)]
+    target_configs: Vec<TargetConfig>,
+
+    /// Internal target config file for daemon startup.
+    #[arg(long, hide = true, value_name = "FILE")]
+    target_config: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -139,11 +151,60 @@ struct DaemonCmd {
     #[arg(long, short = 'e', value_name = "CMD", default_value = DEFAULT_ENGINE_CMD)]
     engine_cmd: String,
 
+    #[arg(long, value_name = "FILE")]
+    prompt_template: Option<PathBuf>,
+
     #[arg(long)]
     no_auto_publish: bool,
 
     #[arg(long, value_name = "MODE", value_enum)]
     permission_mode: Option<PermissionMode>,
+
+    #[arg(long, hide = true, value_name = "FILE")]
+    target_config: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct AgentConfig {
+    engine_cmd: String,
+    prompt_template: Option<String>,
+    no_auto_publish: bool,
+    permission_mode: Option<String>,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            engine_cmd: DEFAULT_ENGINE_CMD.to_string(),
+            prompt_template: None,
+            no_auto_publish: false,
+            permission_mode: None,
+        }
+    }
+}
+
+impl AgentConfig {
+    fn from_start_cmd(cmd: &StartCmd) -> Self {
+        Self {
+            engine_cmd: cmd.engine_cmd.clone(),
+            prompt_template: cmd
+                .prompt_template
+                .as_ref()
+                .map(|p| p.display().to_string()),
+            no_auto_publish: cmd.no_auto_publish,
+            permission_mode: cmd.permission_mode.map(|m| m.as_arg().to_string()),
+        }
+    }
+
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TargetConfig {
+    pr: String,
+    agent: AgentConfig,
 }
 
 impl From<DaemonCmd> for StartCmd {
@@ -156,8 +217,11 @@ impl From<DaemonCmd> for StartCmd {
             on_any_update: value.on_any_update,
             foreground: true,
             engine_cmd: value.engine_cmd,
+            prompt_template: value.prompt_template,
             no_auto_publish: value.no_auto_publish,
             permission_mode: value.permission_mode,
+            target_configs: Vec::new(),
+            target_config: value.target_config,
         }
     }
 }
@@ -235,7 +299,8 @@ impl Run for TuiCmd {
 
 fn spawn_daemon(id: &str, cmd: &StartCmd) -> Result<()> {
     let exe = std::env::current_exe().context("failed to resolve current executable")?;
-    let log_path = state_dir()?.join(format!("{id}.log"));
+    let state_dir = state_dir()?;
+    let log_path = state_dir.join(format!("{id}.log"));
     let log = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -256,6 +321,9 @@ fn spawn_daemon(id: &str, cmd: &StartCmd) -> Result<()> {
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(err))
         .stdin(Stdio::null());
+    if let Some(prompt_template) = &cmd.prompt_template {
+        child.arg("--prompt-template").arg(prompt_template);
+    }
     if let Some(repo) = &cmd.repo {
         child.args(["--repo", repo]);
     }
@@ -271,12 +339,19 @@ fn spawn_daemon(id: &str, cmd: &StartCmd) -> Result<()> {
     if let Some(mode) = cmd.permission_mode {
         child.args(["--permission-mode", mode.as_arg()]);
     }
+    if !cmd.target_configs.is_empty() {
+        let config_path = state_dir.join(format!("{id}.targets.json"));
+        let body = serde_json::to_string_pretty(&cmd.target_configs)?;
+        fs::write(&config_path, body)
+            .with_context(|| format!("failed to write {}", config_path.display()))?;
+        child.arg("--target-config").arg(config_path);
+    }
     child.spawn().context("failed to spawn watch-loop daemon")?;
     Ok(())
 }
 
 fn run_daemon(id: String, cmd: StartCmd) -> Result<()> {
-    let targets = resolve_targets(&cmd.prs, cmd.repo.as_deref())?;
+    let targets = resolve_targets_for_cmd(&cmd)?;
     let mut state = WatchState::new(id, std::process::id(), &cmd, targets);
     save_state(&state)?;
     let signal_slot = signals::install()?;
@@ -330,7 +405,7 @@ fn poll_once(state: &mut WatchState, cmd: &StartCmd) -> Result<()> {
         target.last_fingerprint = Some(fingerprint);
 
         if should_trigger {
-            spawn_develop_pr(target, cmd)?;
+            spawn_develop_pr(target)?;
             let ts = now();
             target.last_spawn_at = Some(ts.clone());
             state.last_spawn_at = Some(ts);
@@ -339,7 +414,7 @@ fn poll_once(state: &mut WatchState, cmd: &StartCmd) -> Result<()> {
     Ok(())
 }
 
-fn spawn_develop_pr(target: &TargetState, cmd: &StartCmd) -> Result<()> {
+fn spawn_develop_pr(target: &TargetState) -> Result<()> {
     let exe = std::env::current_exe().context("failed to resolve current executable")?;
     let pr = target.url.clone().unwrap_or_else(|| {
         format!(
@@ -351,13 +426,16 @@ fn spawn_develop_pr(target: &TargetState, cmd: &StartCmd) -> Result<()> {
     child
         .args(["develop", "pr", &pr])
         .arg("--engine-cmd")
-        .arg(&cmd.engine_cmd)
+        .arg(&target.agent.engine_cmd)
         .stdin(Stdio::null());
-    if cmd.no_auto_publish {
+    if let Some(prompt_template) = &target.agent.prompt_template {
+        child.arg("--prompt-template").arg(prompt_template);
+    }
+    if target.agent.no_auto_publish {
         child.arg("--no-auto-publish");
     }
-    if let Some(mode) = cmd.permission_mode {
-        child.args(["--permission-mode", mode.as_arg()]);
+    if let Some(mode) = &target.agent.permission_mode {
+        child.args(["--permission-mode", mode]);
     }
     child
         .spawn()
@@ -411,6 +489,8 @@ struct TargetState {
     last_seen_at: Option<String>,
     last_spawn_at: Option<String>,
     last_actionable: Option<String>,
+    #[serde(default)]
+    agent: AgentConfig,
 }
 
 impl From<Target> for TargetState {
@@ -425,6 +505,7 @@ impl From<Target> for TargetState {
             last_seen_at: None,
             last_spawn_at: None,
             last_actionable: None,
+            agent: value.agent,
         }
     }
 }
@@ -435,14 +516,58 @@ impl TargetState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Target {
     owner: String,
     repo: String,
     number: u64,
+    agent: AgentConfig,
 }
 
+#[cfg(test)]
 fn resolve_targets(args: &[String], repo_override: Option<&str>) -> Result<Vec<Target>> {
+    resolve_targets_with_agent(args, repo_override, AgentConfig::default())
+}
+
+fn resolve_targets_for_cmd(cmd: &StartCmd) -> Result<Vec<Target>> {
+    let target_configs = load_target_configs(cmd)?;
+    if target_configs.is_empty() {
+        return resolve_targets_with_agent(
+            &cmd.prs,
+            cmd.repo.as_deref(),
+            AgentConfig::from_start_cmd(cmd),
+        );
+    }
+
+    let mut out = Vec::with_capacity(target_configs.len());
+    for config in target_configs {
+        let mut resolved =
+            resolve_targets_with_agent(&[config.pr], cmd.repo.as_deref(), config.agent)?;
+        out.append(&mut resolved);
+    }
+    out.sort_by(|a, b| (&a.owner, &a.repo, a.number).cmp(&(&b.owner, &b.repo, b.number)));
+    out.dedup_by(|a, b| a.owner == b.owner && a.repo == b.repo && a.number == b.number);
+    Ok(out)
+}
+
+fn load_target_configs(cmd: &StartCmd) -> Result<Vec<TargetConfig>> {
+    if !cmd.target_configs.is_empty() {
+        return Ok(cmd.target_configs.clone());
+    }
+    let Some(path) = &cmd.target_config else {
+        return Ok(Vec::new());
+    };
+    let body = fs::read_to_string(path)
+        .with_context(|| format!("failed to read target config: {}", path.display()))?;
+    serde_json::from_str(&body)
+        .with_context(|| format!("failed to parse target config: {}", path.display()))
+}
+
+fn resolve_targets_with_agent(
+    args: &[String],
+    repo_override: Option<&str>,
+    agent: AgentConfig,
+) -> Result<Vec<Target>> {
     let mut out = Vec::with_capacity(args.len());
     let mut repo_cache: Option<(String, String)> = None;
     for arg in args {
@@ -451,6 +576,7 @@ fn resolve_targets(args: &[String], repo_override: Option<&str>) -> Result<Vec<T
                 owner,
                 repo,
                 number,
+                agent: agent.clone(),
             });
             continue;
         }
@@ -469,10 +595,11 @@ fn resolve_targets(args: &[String], repo_override: Option<&str>) -> Result<Vec<T
             owner,
             repo,
             number,
+            agent: agent.clone(),
         });
     }
-    out.sort();
-    out.dedup();
+    out.sort_by(|a, b| (&a.owner, &a.repo, a.number).cmp(&(&b.owner, &b.repo, b.number)));
+    out.dedup_by(|a, b| a.owner == b.owner && a.repo == b.repo && a.number == b.number);
     Ok(out)
 }
 
@@ -1039,6 +1166,11 @@ impl TuiApp {
                     self.mode.set_pr_selected(prs.len().saturating_sub(1));
                 }
             }
+            TuiMode::AgentInput { prs, selected, .. } => {
+                if *selected >= prs.len() {
+                    self.mode.set_pr_selected(prs.len().saturating_sub(1));
+                }
+            }
             TuiMode::RepoInput { .. } => {}
         }
     }
@@ -1057,7 +1189,18 @@ enum TuiMode {
         prs: Vec<PickablePr>,
         selected: usize,
         picked: BTreeSet<usize>,
+        configs: BTreeMap<usize, AgentConfig>,
         message: Option<String>,
+    },
+    AgentInput {
+        repo: String,
+        prs: Vec<PickablePr>,
+        selected: usize,
+        picked: BTreeSet<usize>,
+        configs: BTreeMap<usize, AgentConfig>,
+        field: AgentConfigField,
+        input: String,
+        message: String,
     },
 }
 
@@ -1065,10 +1208,19 @@ type RepoHintResult = std::result::Result<(String, String), String>;
 
 impl TuiMode {
     fn set_pr_selected(&mut self, next: usize) {
-        if let Self::PrSelect { selected, .. } = self {
-            *selected = next;
+        match self {
+            Self::PrSelect { selected, .. } | Self::AgentInput { selected, .. } => {
+                *selected = next;
+            }
+            Self::Dashboard | Self::RepoInput { .. } => {}
         }
     }
+}
+
+#[derive(Debug)]
+enum AgentConfigField {
+    PromptTemplate,
+    EngineCmd,
 }
 
 fn handle_tui_key(app: &mut TuiApp, states: &[WatchState], code: KeyCode) -> Result<bool> {
@@ -1118,6 +1270,7 @@ fn handle_tui_key(app: &mut TuiApp, states: &[WatchState], code: KeyCode) -> Res
             prs,
             mut selected,
             mut picked,
+            mut configs,
             mut message,
         } => {
             let mut quit = false;
@@ -1141,16 +1294,71 @@ fn handle_tui_key(app: &mut TuiApp, states: &[WatchState], code: KeyCode) -> Res
                         picked.insert(selected);
                     }
                 }
+                KeyCode::Char('p') => {
+                    let input = configs
+                        .get(&selected)
+                        .and_then(|c| c.prompt_template.clone())
+                        .unwrap_or_default();
+                    app.mode = TuiMode::AgentInput {
+                        repo,
+                        prs,
+                        selected,
+                        picked,
+                        configs,
+                        field: AgentConfigField::PromptTemplate,
+                        input,
+                        message: "prompt template path (empty clears)".to_string(),
+                    };
+                    return Ok(false);
+                }
+                KeyCode::Char('e') => {
+                    let input = configs
+                        .get(&selected)
+                        .map(|c| c.engine_cmd.clone())
+                        .unwrap_or_else(|| DEFAULT_ENGINE_CMD.to_string());
+                    app.mode = TuiMode::AgentInput {
+                        repo,
+                        prs,
+                        selected,
+                        picked,
+                        configs,
+                        field: AgentConfigField::EngineCmd,
+                        input,
+                        message: "engine command (empty restores default)".to_string(),
+                    };
+                    return Ok(false);
+                }
+                KeyCode::Char('m') => {
+                    let cfg = configs.entry(selected).or_default();
+                    cfg.permission_mode = next_permission_mode(cfg.permission_mode.as_deref());
+                    if cfg.is_default() {
+                        configs.remove(&selected);
+                    }
+                }
+                KeyCode::Char('a') => {
+                    let cfg = configs.entry(selected).or_default();
+                    cfg.no_auto_publish = !cfg.no_auto_publish;
+                    if cfg.is_default() {
+                        configs.remove(&selected);
+                    }
+                }
+                KeyCode::Char('c') => {
+                    configs.remove(&selected);
+                }
                 KeyCode::Enter => {
-                    let chosen: Vec<String> = picked
+                    let chosen: Vec<TargetConfig> = picked
                         .iter()
-                        .filter_map(|idx| prs.get(*idx))
-                        .map(|pr| pr.url.clone())
+                        .filter_map(|idx| {
+                            prs.get(*idx).map(|pr| TargetConfig {
+                                pr: pr.url.clone(),
+                                agent: configs.get(idx).cloned().unwrap_or_default(),
+                            })
+                        })
                         .collect();
                     if chosen.is_empty() {
                         message = Some("select at least one PR with Space".to_string());
                     } else {
-                        match start_watch_for_prs(chosen) {
+                        match start_watch_for_targets(chosen) {
                             Ok(()) => {
                                 app.mode = TuiMode::Dashboard;
                                 app.repo_filter = Some(repo);
@@ -1168,9 +1376,83 @@ fn handle_tui_key(app: &mut TuiApp, states: &[WatchState], code: KeyCode) -> Res
                 prs,
                 selected,
                 picked,
+                configs,
                 message,
             };
             Ok(quit)
+        }
+        TuiMode::AgentInput {
+            repo,
+            prs,
+            selected,
+            picked,
+            mut configs,
+            field,
+            mut input,
+            message,
+        } => {
+            match code {
+                KeyCode::Esc => {
+                    app.mode = TuiMode::PrSelect {
+                        repo,
+                        prs,
+                        selected,
+                        picked,
+                        configs,
+                        message: Some("agent option edit cancelled".to_string()),
+                    };
+                }
+                KeyCode::Enter => {
+                    apply_agent_input(&mut configs, selected, &field, input.trim());
+                    app.mode = TuiMode::PrSelect {
+                        repo,
+                        prs,
+                        selected,
+                        picked,
+                        configs,
+                        message: Some("agent option updated".to_string()),
+                    };
+                }
+                KeyCode::Backspace => {
+                    input.pop();
+                    app.mode = TuiMode::AgentInput {
+                        repo,
+                        prs,
+                        selected,
+                        picked,
+                        configs,
+                        field,
+                        input,
+                        message,
+                    };
+                }
+                KeyCode::Char(c) => {
+                    input.push(c);
+                    app.mode = TuiMode::AgentInput {
+                        repo,
+                        prs,
+                        selected,
+                        picked,
+                        configs,
+                        field,
+                        input,
+                        message,
+                    };
+                }
+                _ => {
+                    app.mode = TuiMode::AgentInput {
+                        repo,
+                        prs,
+                        selected,
+                        picked,
+                        configs,
+                        field,
+                        input,
+                        message,
+                    };
+                }
+            }
+            Ok(false)
         }
     }
 }
@@ -1233,6 +1515,7 @@ fn load_pr_picker(app: &mut TuiApp, owner: String, repo: String) {
                 prs,
                 selected: 0,
                 picked: BTreeSet::new(),
+                configs: BTreeMap::new(),
                 message: None,
             };
         }
@@ -1243,7 +1526,11 @@ fn load_pr_picker(app: &mut TuiApp, owner: String, repo: String) {
     }
 }
 
-fn start_watch_for_prs(prs: Vec<String>) -> Result<()> {
+fn start_watch_for_targets(target_configs: Vec<TargetConfig>) -> Result<()> {
+    let prs = target_configs
+        .iter()
+        .map(|target| target.pr.clone())
+        .collect::<Vec<_>>();
     let cmd = StartCmd {
         prs,
         repo: None,
@@ -1252,11 +1539,61 @@ fn start_watch_for_prs(prs: Vec<String>) -> Result<()> {
         on_any_update: false,
         foreground: false,
         engine_cmd: DEFAULT_ENGINE_CMD.to_string(),
+        prompt_template: None,
         no_auto_publish: false,
         permission_mode: None,
+        target_configs,
+        target_config: None,
     };
     let id = make_id();
     spawn_daemon(&id, &cmd)
+}
+
+fn next_permission_mode(current: Option<&str>) -> Option<String> {
+    let modes = [
+        "acceptEdits",
+        "auto",
+        "bypassPermissions",
+        "default",
+        "dontAsk",
+        "plan",
+    ];
+    match current {
+        None => Some(modes[0].to_string()),
+        Some(cur) => modes
+            .iter()
+            .position(|mode| *mode == cur)
+            .and_then(|idx| modes.get(idx + 1))
+            .map(|mode| (*mode).to_string()),
+    }
+}
+
+fn apply_agent_input(
+    configs: &mut BTreeMap<usize, AgentConfig>,
+    selected: usize,
+    field: &AgentConfigField,
+    value: &str,
+) {
+    let cfg = configs.entry(selected).or_default();
+    match field {
+        AgentConfigField::PromptTemplate => {
+            cfg.prompt_template = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            };
+        }
+        AgentConfigField::EngineCmd => {
+            cfg.engine_cmd = if value.is_empty() {
+                DEFAULT_ENGINE_CMD.to_string()
+            } else {
+                value.to_string()
+            };
+        }
+    }
+    if cfg.is_default() {
+        configs.remove(&selected);
+    }
 }
 
 struct TermGuard {
@@ -1289,15 +1626,39 @@ fn draw_tui(stdout: &mut io::Stdout, states: &[WatchState], app: &TuiApp) -> Res
             prs,
             selected,
             picked,
+            configs,
             message,
         } => draw_pr_select(
             stdout,
+            PrSelectView {
+                repo,
+                prs,
+                selected: *selected,
+                picked,
+                configs,
+                message: message.as_deref(),
+            },
+            (cols, rows),
+        ),
+        TuiMode::AgentInput {
             repo,
             prs,
-            *selected,
-            picked,
-            message.as_deref(),
-            (cols, rows),
+            selected,
+            field,
+            input,
+            message,
+            ..
+        } => draw_agent_input(
+            stdout,
+            AgentInputView {
+                repo,
+                prs,
+                selected: *selected,
+                field,
+                input,
+                message,
+            },
+            cols,
         ),
     }
 }
@@ -1420,40 +1781,47 @@ fn draw_repo_input(stdout: &mut io::Stdout, input: &str, message: &str, cols: u1
     Ok(())
 }
 
-fn draw_pr_select(
-    stdout: &mut io::Stdout,
-    repo: &str,
-    prs: &[PickablePr],
+struct PrSelectView<'a> {
+    repo: &'a str,
+    prs: &'a [PickablePr],
     selected: usize,
-    picked: &BTreeSet<usize>,
-    message: Option<&str>,
-    size: (u16, u16),
-) -> Result<()> {
+    picked: &'a BTreeSet<usize>,
+    configs: &'a BTreeMap<usize, AgentConfig>,
+    message: Option<&'a str>,
+}
+
+fn draw_pr_select(stdout: &mut io::Stdout, view: PrSelectView<'_>, size: (u16, u16)) -> Result<()> {
     let (cols, rows) = size;
     draw_header(stdout)?;
     queue!(
         stdout,
         cursor::MoveTo(0, 1),
         Print(fit(
-            &format!("{repo}  Space: select PR  Enter: start watcher  Esc: back  q: quit"),
+            &format!("{}  Space: select  p: prompt  e: engine  m: mode  a: auto-publish  c: clear  Enter: start  Esc: back", view.repo),
             cols
         ))
     )?;
-    if let Some(message) = message {
+    if let Some(message) = view.message {
         queue!(stdout, cursor::MoveTo(0, 2), Print(fit(message, cols)))?;
     }
-    if prs.is_empty() {
+    if view.prs.is_empty() {
         queue!(stdout, cursor::MoveTo(0, 4), Print("no open PRs"))?;
         stdout.flush()?;
         return Ok(());
     }
-    for (row, (idx, pr)) in (4u16..).zip(prs.iter().enumerate()) {
+    for (row, (idx, pr)) in (4u16..).zip(view.prs.iter().enumerate()) {
         if row >= rows {
             break;
         }
-        let cursor = if idx == selected { "> " } else { "  " };
-        let mark = if picked.contains(&idx) { "[x]" } else { "[ ]" };
-        if idx == selected {
+        let cursor = if idx == view.selected { "> " } else { "  " };
+        let mark = if view.picked.contains(&idx) {
+            "[x]"
+        } else {
+            "[ ]"
+        };
+        let agent = view.configs.get(&idx).cloned().unwrap_or_default();
+        let agent_label = agent_config_label(&agent);
+        if idx == view.selected {
             queue!(stdout, SetAttribute(Attribute::Reverse))?;
         }
         queue!(
@@ -1461,8 +1829,8 @@ fn draw_pr_select(
             cursor::MoveTo(0, row),
             Print(fit(
                 &format!(
-                    "{cursor}{mark} #{} {} {} updated={}",
-                    pr.number, pr.title, pr.head_ref, pr.updated_at
+                    "{cursor}{mark} #{} {} {} updated={} {}",
+                    pr.number, pr.title, pr.head_ref, pr.updated_at, agent_label
                 ),
                 cols
             )),
@@ -1471,6 +1839,70 @@ fn draw_pr_select(
     }
     stdout.flush()?;
     Ok(())
+}
+
+fn agent_config_label(config: &AgentConfig) -> String {
+    let mut parts = Vec::new();
+    if config.prompt_template.is_some() {
+        parts.push("prompt");
+    }
+    if config.engine_cmd != DEFAULT_ENGINE_CMD {
+        parts.push("engine");
+    }
+    if let Some(mode) = &config.permission_mode {
+        parts.push(mode.as_str());
+    }
+    if config.no_auto_publish {
+        parts.push("no-auto-publish");
+    }
+    if parts.is_empty() {
+        "[default]".to_string()
+    } else {
+        format!("[{}]", parts.join(","))
+    }
+}
+
+struct AgentInputView<'a> {
+    repo: &'a str,
+    prs: &'a [PickablePr],
+    selected: usize,
+    field: &'a AgentConfigField,
+    input: &'a str,
+    message: &'a str,
+}
+
+fn draw_agent_input(stdout: &mut io::Stdout, view: AgentInputView<'_>, cols: u16) -> Result<()> {
+    draw_header(stdout)?;
+    let pr_label = view
+        .prs
+        .get(view.selected)
+        .map(|pr| format!("#{} {}", pr.number, pr.title))
+        .unwrap_or_else(|| "<unknown PR>".to_string());
+    queue!(
+        stdout,
+        cursor::MoveTo(0, 1),
+        Print(fit(&format!("{}  {pr_label}", view.repo), cols)),
+        cursor::MoveTo(0, 3),
+        Print(fit(view.message, cols)),
+        cursor::MoveTo(0, 5),
+        Print(fit(
+            &format!("{}: {}", view.field.label(), view.input),
+            cols
+        )),
+        cursor::MoveTo(0, 7),
+        Print("Enter: apply  Esc: cancel")
+    )?;
+    stdout.flush()?;
+    Ok(())
+}
+
+impl AgentConfigField {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::PromptTemplate => "prompt-template",
+            Self::EngineCmd => "engine-cmd",
+        }
+    }
 }
 
 fn fit(s: &str, cols: u16) -> String {
@@ -1723,5 +2155,144 @@ mod tests {
             }],
         };
         assert_eq!(snap.actionable_reason(), Some("1 failed check(s)".into()));
+    }
+
+    #[test]
+    fn target_configs_preserve_per_pr_agent_options() {
+        let cmd = StartCmd {
+            prs: vec![
+                "https://github.com/o/r/pull/1".to_string(),
+                "https://github.com/o/r/pull/2".to_string(),
+            ],
+            repo: None,
+            interval: 60,
+            trigger_initial: false,
+            on_any_update: false,
+            foreground: false,
+            engine_cmd: DEFAULT_ENGINE_CMD.to_string(),
+            prompt_template: None,
+            no_auto_publish: false,
+            permission_mode: None,
+            target_configs: vec![
+                TargetConfig {
+                    pr: "https://github.com/o/r/pull/1".to_string(),
+                    agent: AgentConfig {
+                        prompt_template: Some("one.md".to_string()),
+                        ..AgentConfig::default()
+                    },
+                },
+                TargetConfig {
+                    pr: "https://github.com/o/r/pull/2".to_string(),
+                    agent: AgentConfig {
+                        engine_cmd: "agent -- {PROMPT}".to_string(),
+                        no_auto_publish: true,
+                        permission_mode: Some("plan".to_string()),
+                        ..AgentConfig::default()
+                    },
+                },
+            ],
+            target_config: None,
+        };
+
+        let got = resolve_targets_for_cmd(&cmd).unwrap();
+
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].number, 1);
+        assert_eq!(got[0].agent.prompt_template.as_deref(), Some("one.md"));
+        assert_eq!(got[1].number, 2);
+        assert_eq!(got[1].agent.engine_cmd, "agent -- {PROMPT}");
+        assert!(got[1].agent.no_auto_publish);
+        assert_eq!(got[1].agent.permission_mode.as_deref(), Some("plan"));
+    }
+
+    #[test]
+    fn agent_input_updates_and_clears_defaults() {
+        let mut configs = BTreeMap::new();
+
+        apply_agent_input(
+            &mut configs,
+            0,
+            &AgentConfigField::PromptTemplate,
+            "prompt.md",
+        );
+        assert_eq!(
+            configs
+                .get(&0)
+                .and_then(|config| config.prompt_template.as_deref()),
+            Some("prompt.md")
+        );
+
+        apply_agent_input(&mut configs, 0, &AgentConfigField::PromptTemplate, "");
+        assert!(!configs.contains_key(&0));
+    }
+
+    #[test]
+    fn permission_mode_cycles_to_none_after_last_mode() {
+        assert_eq!(next_permission_mode(None).as_deref(), Some("acceptEdits"));
+        assert_eq!(
+            next_permission_mode(Some("acceptEdits")).as_deref(),
+            Some("auto")
+        );
+        assert_eq!(next_permission_mode(Some("plan")), None);
+    }
+
+    #[test]
+    fn pr_select_key_toggles_per_pr_options() {
+        let mut app = TuiApp {
+            mode: TuiMode::PrSelect {
+                repo: "o/r".to_string(),
+                prs: vec![PickablePr {
+                    number: 1,
+                    title: "Fix".to_string(),
+                    url: "https://github.com/o/r/pull/1".to_string(),
+                    head_ref: "feature/x".to_string(),
+                    updated_at: "2026-06-01T00:00:00Z".to_string(),
+                }],
+                selected: 0,
+                picked: BTreeSet::new(),
+                configs: BTreeMap::new(),
+                message: None,
+            },
+            ..Default::default()
+        };
+
+        handle_tui_key(&mut app, &[], KeyCode::Char('m')).unwrap();
+        handle_tui_key(&mut app, &[], KeyCode::Char('a')).unwrap();
+
+        let TuiMode::PrSelect { configs, .. } = app.mode else {
+            panic!("expected PR select mode");
+        };
+        let cfg = configs.get(&0).expect("selected PR config");
+        assert_eq!(cfg.permission_mode.as_deref(), Some("acceptEdits"));
+        assert!(cfg.no_auto_publish);
+    }
+
+    #[test]
+    fn pr_select_key_opens_prompt_template_input() {
+        let mut app = TuiApp {
+            mode: TuiMode::PrSelect {
+                repo: "o/r".to_string(),
+                prs: vec![PickablePr {
+                    number: 1,
+                    title: "Fix".to_string(),
+                    url: "https://github.com/o/r/pull/1".to_string(),
+                    head_ref: "feature/x".to_string(),
+                    updated_at: "2026-06-01T00:00:00Z".to_string(),
+                }],
+                selected: 0,
+                picked: BTreeSet::new(),
+                configs: BTreeMap::new(),
+                message: None,
+            },
+            ..Default::default()
+        };
+
+        handle_tui_key(&mut app, &[], KeyCode::Char('p')).unwrap();
+
+        let TuiMode::AgentInput { field, input, .. } = app.mode else {
+            panic!("expected agent input mode");
+        };
+        assert!(matches!(field, AgentConfigField::PromptTemplate));
+        assert_eq!(input, "");
     }
 }
