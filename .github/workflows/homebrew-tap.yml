@@ -1,0 +1,57 @@
+name: homebrew-tap
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to publish (e.g. v0.1.34)"
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: homebrew-tap-${{ github.event.release.tag_name || github.event.inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: ${{ github.event_name == 'workflow_dispatch' || !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+    steps:
+      - name: Checkout the Homebrew tap
+        uses: actions/checkout@v6
+        with:
+          repository: masseater/homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          persist-credentials: true
+          path: tap
+
+      - name: Download the Homebrew formula
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          gh release download "${TAG}" -R masseater/rai --pattern rai.rb -D tap/Formula
+
+      - name: Commit and push the formula
+        working-directory: tap
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/rai.rb
+          if git diff --cached --quiet; then
+            echo "Formula is already up to date."
+            exit 0
+          fi
+          git commit -m "rai ${TAG#v}"
+          git push
