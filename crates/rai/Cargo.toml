@@ -1,6 +1,6 @@
 [package]
 name = "rai"
-description = "rai — an extensible personal CLI."
+description = "Extensible personal CLI"
 homepage = "https://github.com/masseater/rai"
 version.workspace = true
 edition.workspace = true

@@ -12,8 +12,7 @@ commands can be added by editing one enum variant and one match arm.
 ## Installation
 
 ```sh
-brew tap masseater/rai
-brew install rai
+brew install masseater/tap/rai
 ```
 
 Or build from source:
@@ -133,7 +132,7 @@ For details on layout, conventions, and how to add a subcommand, see
 ## Related Links
 
 - Specs: [`docs/specs/`](docs/specs/)
-- Homebrew tap: [`masseater/homebrew-rai`](https://github.com/masseater/homebrew-rai)
+- Homebrew tap: [`masseater/tap`](https://github.com/masseater/homebrew-tap)
 
 ## License
 
