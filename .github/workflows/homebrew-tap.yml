@@ -39,7 +39,31 @@ jobs:
         run: |
           set -euo pipefail
 
-          gh release download "${TAG}" -R masseater/rai --pattern rai.rb -D tap/Formula
+          gh release download "${TAG}" -R masseater/rai --pattern rai.rb --clobber -D tap/Formula
+
+      - name: Normalize the formula with brew style
+        run: |
+          set -euo pipefail
+
+          export PATH="/home/linuxbrew/.linuxbrew/bin:${PATH}"
+          brew update
+          # We avoid reformatting user-provided data such as the app description and homepage.
+          brew style --except-cops FormulaAudit/Homepage,FormulaAudit/Desc --fix tap/Formula/rai.rb || true
+
+      - name: Drop the version line and add a smoke test unless present
+        run: |
+          set -euo pipefail
+
+          formula=tap/Formula/rai.rb
+          # The version is already in the download URLs; keeping a second copy
+          # in the formula only makes the tap churn on every release.
+          sed -i -e '/^  version "[^"]*"$/d' "${formula}"
+          if ! grep -q 'test do' "${formula}"; then
+            sed '$d' "${formula}" > "${formula}.tmp"
+            printf '\n  test do\n    system bin/"rai", "--version"\n  end\n' >> "${formula}.tmp"
+            printf 'end\n' >> "${formula}.tmp"
+            mv "${formula}.tmp" "${formula}"
+          fi
 
       - name: Commit and push the formula
         working-directory: tap
